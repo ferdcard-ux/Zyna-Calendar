@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.coverage
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Local IDE files
+.idea/
+.vscode/
+*.code-workspace
+
+# Build artifacts
+build_deb/pkgroot/
+build_deb/*.deb.tmp
+build_deb/*.tar.*
+
+# Autenticación y Secretos
+token.json
+credentials.json
+.env

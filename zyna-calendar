@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+export NO_AT_BRIDGE=1
+export PYTHONUNBUFFERED=1
+
+APP_PATH="/opt/zyna-calendar/main.py"
+TOKEN_PATH="${HOME}/.config/zyna-calendar/token.json"
+
+needs_terminal=0
+if [[ ! -f "${TOKEN_PATH}" ]]; then
+    needs_terminal=1
+elif ! grep -q '"refresh_token"' "${TOKEN_PATH}" 2>/dev/null; then
+    needs_terminal=1
+fi
+
+if [[ "${needs_terminal}" -eq 1 ]]; then
+    if command -v xfce4-terminal >/dev/null 2>&1; then
+        exec xfce4-terminal --disable-server --command="bash -lc '/usr/bin/python3 \"${APP_PATH}\"; echo; read -p \"Pulsa Enter para cerrar...\" _'"
+    fi
+fi
+
+exec /usr/bin/python3 "${APP_PATH}"
