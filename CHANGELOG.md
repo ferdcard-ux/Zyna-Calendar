@@ -1,12 +1,18 @@
 # Changelog
 
+## 0.1.2
+
+- Instalador refuerza dependencias con pip --user y valida imports.
+- Opcion "Refresh Token" para reautorizar y verificar conexion.
+- Script de desinstalacion interactivo incluido.
+- Documentacion actualizada con la nueva instalacion y desinstalacion.
+
 ## 0.1.1
 
 - Correccion de autenticacion offline para evitar apertura de navegador sin conexion.
 - Ajustes de dependencias del .deb para compatibilidad en Zorin Lite.
 - Flujo de autenticacion manual unificado con guardado del refresh_token.
 - Launcher detecta primera ejecucion y abre terminal solo si falta token.
-- Documentacion actualizada con instalacion recomendada del .deb.
 
 ## 0.1.0
 

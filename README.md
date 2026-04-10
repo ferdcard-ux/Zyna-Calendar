@@ -8,6 +8,7 @@ Widget de escritorio ligero para Zorin OS Lite (XFCE) que muestra los eventos de
 - Sincronizacion no bloqueante con hilo dedicado.
 - Cache local para modo sin conexion.
 - Autenticacion manual por consola con persistencia de refresh_token.
+- Opcion "Refresh Token" para reautorizar y validar conexion.
 - Notificaciones nativas de eventos proximos.
 - Configuracion editable desde la interfaz (eventos, autostart, credenciales, intervalo).
 - Menu hamburguesa con acciones rapidas.
@@ -36,12 +37,14 @@ Si es el primer inicio y no existe `token.json`, se mostrara un enlace en la ter
 ./install.sh
 ```
 
+El instalador tambien instala dependencias adicionales en el entorno de usuario y verifica las importaciones principales.
+
 ## Empaquetado .deb
 
 ### Instalacion recomendada del .deb (resuelve dependencias)
 
 ```bash
-sudo apt install ./build_deb/zyna-calendar_0.1.1_all.deb
+sudo apt install ./build_deb/zyna-calendar_0.1.2_all.deb
 ```
 
 ### Instalacion automatizada con dependencias
@@ -56,4 +59,12 @@ sudo apt install ./build_deb/zyna-calendar_0.1.1_all.deb
 ./build_deb/build.sh
 ```
 
-El paquete generado quedara en `build_deb/zyna-calendar_0.1.1_all.deb`.
+El paquete generado quedara en `build_deb/zyna-calendar_0.1.2_all.deb`.
+
+## Desinstalacion interactiva
+
+```bash
+./uninstall.sh
+```
+
+Permite eliminar el applet, los datos locales y las dependencias instaladas con `pip --user`.

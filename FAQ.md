@@ -12,6 +12,10 @@
 - Asegura que la API de Google Calendar este habilitada.
 - En el primer inicio la autorizacion se realiza por consola; asegurate de aceptar el enlace y pegar el codigo.
 
+## Quiero refrescar el token manualmente
+
+- Usa el menu "Refresh Token" para reautorizar y validar la conexion.
+
 ## Me vuelve a pedir el codigo de autenticacion
 
 - Verifica que exista `~/.config/zyna-calendar/token.json`.
@@ -25,10 +29,11 @@
 
 ## El .deb no instala dependencias automaticamente
 
-- Usa `sudo apt install ./build_deb/zyna-calendar_0.1.1_all.deb` para resolver dependencias.
+- Usa `sudo apt install ./build_deb/zyna-calendar_0.1.2_all.deb` para resolver dependencias.
 - Alternativamente ejecuta `./build_deb/install.sh`.
 
 ## Como desinstalo el widget
 
 - Si lo instalaste con .deb, ejecuta `sudo apt remove zyna-calendar`.
 - Si lo ejecutas localmente, borra el directorio y elimina el autostart desde la configuracion.
+- También puedes usar `./uninstall.sh` para una desinstalacion guiada.

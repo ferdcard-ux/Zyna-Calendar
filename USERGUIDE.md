@@ -10,6 +10,7 @@
 ## Menu principal
 
 - Sync Manual: actualiza los eventos inmediatamente.
+- Refresh Token: reautoriza el acceso y valida la conexion con Google.
 - Configuracion: ajusta numero de eventos, autostart y ruta de credenciales.
 - Info: informacion basica del widget.
 - Reiniciar Applet: reinicia la aplicacion.
@@ -39,7 +40,7 @@ Se envia una notificacion cuando falta menos de 10 minutos para el proximo event
 Opcion recomendada (resuelve dependencias automaticamente):
 
 ```bash
-sudo apt install ./build_deb/zyna-calendar_0.1.1_all.deb
+sudo apt install ./build_deb/zyna-calendar_0.1.2_all.deb
 ```
 
 Instalacion automatizada:
@@ -47,3 +48,13 @@ Instalacion automatizada:
 ```bash
 ./build_deb/install.sh
 ```
+
+## Desinstalacion
+
+Puedes ejecutar el script interactivo:
+
+```bash
+./uninstall.sh
+```
+
+Pregunta si deseas eliminar los datos locales y las dependencias instaladas con `pip --user`.

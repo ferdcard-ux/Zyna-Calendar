@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
 import subprocess
 import sys
 import webbrowser
+from pathlib import Path
 from collections.abc import Callable
 from datetime import datetime, timedelta
 from typing import Any
@@ -636,6 +638,10 @@ class CalendarWidget(QWidget):
         sync_action.triggered.connect(self.refresh_events)
         menu.addAction(sync_action)
 
+        refresh_token_action = QAction("Refresh Token", self)
+        refresh_token_action.triggered.connect(self._refresh_token)
+        menu.addAction(refresh_token_action)
+
         config_action = QAction("Configuracion", self)
         config_action.triggered.connect(self._open_config_dialog)
         menu.addAction(config_action)
@@ -653,6 +659,40 @@ class CalendarWidget(QWidget):
         menu.addAction(exit_action)
 
         return menu
+
+    def _refresh_token(self) -> None:
+        """Launch the manual auth flow in a terminal and verify connectivity."""
+
+        app_root = Path(__file__).resolve().parent.parent
+        python_executable = sys.executable
+        auth_command = (
+            f"cd \"{app_root}\"; "
+            f"\"{python_executable}\" -c "
+            "\"from core.auth import load_google_credentials; load_google_credentials()\"; "
+            f"\"{python_executable}\" -c "
+            "\"import httplib2; import googleapiclient.discovery; "
+            "print(\\\"Conexión lista para sincronizar\\\")\"; "
+            "echo; read -p \\\"Pulsa Enter para cerrar...\\\" _"
+        )
+
+        if self._menu_button is not None:
+            self._status_label.setText("Actualizando token...")
+
+        if shutil.which("xfce4-terminal"):
+            subprocess.Popen(
+                [
+                    "xfce4-terminal",
+                    "--disable-server",
+                    "--command",
+                    f"bash -lc '{auth_command}'",
+                ],
+                start_new_session=True,
+            )
+        else:
+            subprocess.Popen(
+                ["bash", "-lc", auth_command],
+                start_new_session=True,
+            )
 
     def _show_menu(self) -> None:
         """Display the hamburger menu anchored to the button."""

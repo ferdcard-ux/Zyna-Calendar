@@ -14,6 +14,10 @@ echo "Instalando Zyna-Calendar en: $PROJECT_ROOT"
 "$VENV_PATH/bin/pip" install --upgrade pip
 "$VENV_PATH/bin/pip" install -r "$PROJECT_ROOT/requirements.txt"
 
+echo "Instalando dependencias adicionales en el entorno de usuario..."
+"$PYTHON_BIN" -m pip install --user google-api-python-client google-auth-httplib2 google-auth-oauthlib uritemplate httplib2
+"$PYTHON_BIN" -c "import googleapiclient; print('Listo, Zyna ya tiene sus librerías')"
+
 chmod +x "$PROJECT_ROOT/main.py"
 chmod +x "$PROJECT_ROOT/install.sh"
 

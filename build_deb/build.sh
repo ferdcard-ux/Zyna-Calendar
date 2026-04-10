@@ -3,7 +3,7 @@
 set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-VERSION="0.1.1"
+VERSION="0.1.2"
 BUILD_ROOT="$PROJECT_ROOT/build_deb"
 PKG_ROOT="$BUILD_ROOT/pkgroot"
 DEBIAN_DIR="$PKG_ROOT/DEBIAN"
@@ -20,6 +20,7 @@ cp -r "$PROJECT_ROOT/ui" "$APP_DIR/"
 cp -r "$PROJECT_ROOT/utils" "$APP_DIR/"
 cp "$PROJECT_ROOT/main.py" "$APP_DIR/"
 cp "$PROJECT_ROOT/icon-128x128.png" "$APP_DIR/"
+cp "$PROJECT_ROOT/uninstall.sh" "$APP_DIR/"
 cp "$PROJECT_ROOT/zyna-calendar" "$BIN_DIR/zyna-calendar"
 
 if [[ -f "$APP_DIR/credentials.json" ]]; then
@@ -52,6 +53,7 @@ Categories=Utility;Office;
 EOF
 
 chmod 755 "$APP_DIR/main.py"
+chmod 755 "$APP_DIR/uninstall.sh"
 chmod 755 "$BIN_DIR/zyna-calendar"
 
 dpkg-deb --build "$PKG_ROOT" "$BUILD_ROOT/zyna-calendar_${VERSION}_all.deb"
