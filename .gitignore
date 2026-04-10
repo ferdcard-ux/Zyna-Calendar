@@ -33,3 +33,6 @@ build_deb/*.tar.*
 token.json
 credentials.json
 .env
+
+# Archivos de notas de cambios.
+Fix.txt
