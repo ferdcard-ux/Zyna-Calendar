@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Sequence
 
 from google.auth.transport.requests import Request
+from google.auth.exceptions import RefreshError
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 
@@ -21,12 +22,15 @@ class MissingCredentialsError(FileNotFoundError):
 
 def load_google_credentials(
     scopes: Sequence[str] | None = None,
+    force_reauth: bool = False,
 ) -> Credentials:
+    """Load Google credentials, refreshing or reauthorizing when needed."""
+
     requested_scopes = list(scopes or SCOPES)
     token_path = get_token_path()
     credentials_path = get_credentials_path()
 
-    credentials = _load_cached_credentials(token_path, requested_scopes)
+    credentials = None if force_reauth else _load_cached_credentials(token_path, requested_scopes)
 
     # 1. Intentar refrescar si es posible
     if credentials and credentials.expired and credentials.refresh_token:
@@ -34,11 +38,15 @@ def load_google_credentials(
             credentials.refresh(Request())
             _persist_credentials(token_path, credentials)
             return credentials
+        except RefreshError:
+            print("No se pudo refrescar el token. Se solicitara una nueva autorizacion.")
+            credentials = None
         except Exception:
-            print("No se pudo refrescar el token. Se usaran credenciales en caché.")
+            print("No se pudo refrescar el token por un error inesperado. Se solicitara una nueva autorizacion.")
+            credentials = None
 
     # 2. Si no hay credenciales válidas, iniciar flujo manual OOB
-    if not credentials or (not credentials.valid and not credentials.refresh_token):
+    if not credentials or not credentials.valid:
         if not credentials_path.exists():
             raise MissingCredentialsError(f"Falta credentials.json en {credentials_path}")
 

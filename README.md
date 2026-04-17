@@ -44,7 +44,7 @@ El instalador tambien instala dependencias adicionales en el entorno de usuario 
 ### Instalacion recomendada del .deb (resuelve dependencias)
 
 ```bash
-sudo apt install ./build_deb/zyna-calendar_0.1.2_all.deb
+sudo apt install ./build_deb/zyna-calendar_0.1.5_all.deb
 ```
 
 ### Instalacion automatizada con dependencias
@@ -59,7 +59,7 @@ sudo apt install ./build_deb/zyna-calendar_0.1.2_all.deb
 ./build_deb/build.sh
 ```
 
-El paquete generado quedara en `build_deb/zyna-calendar_0.1.2_all.deb`.
+El paquete generado quedara en `build_deb/zyna-calendar_0.1.5_all.deb`.
 
 ## Desinstalacion interactiva
 

@@ -6,6 +6,7 @@ export NO_AT_BRIDGE=1
 export PYTHONUNBUFFERED=1
 
 APP_PATH="/opt/zyna-calendar/main.py"
+APP_DIR="/opt/zyna-calendar"
 TOKEN_PATH="${HOME}/.config/zyna-calendar/token.json"
 
 needs_terminal=0
@@ -13,11 +14,70 @@ if [[ ! -f "${TOKEN_PATH}" ]]; then
     needs_terminal=1
 elif ! grep -q '"refresh_token"' "${TOKEN_PATH}" 2>/dev/null; then
     needs_terminal=1
+else
+    auth_probe_status=0
+    if /usr/bin/python3 - <<'PY'
+import warnings
+from pathlib import Path
+
+from google.auth.exceptions import RefreshError
+from google.auth.transport.requests import Request
+from google.oauth2.credentials import Credentials
+
+warnings.filterwarnings(
+    "ignore",
+    category=FutureWarning,
+    module="google.api_core._python_version_support",
+)
+
+token_path = Path.home() / ".config" / "zyna-calendar" / "token.json"
+if not token_path.exists():
+    raise SystemExit(10)
+
+credentials = Credentials.from_authorized_user_file(
+    str(token_path),
+    scopes=["https://www.googleapis.com/auth/calendar.readonly"],
+)
+if not credentials.refresh_token:
+    raise SystemExit(11)
+
+if credentials.expired:
+    try:
+        credentials.refresh(Request())
+    except RefreshError:
+        raise SystemExit(20)
+    except Exception:
+        raise SystemExit(0)
+
+raise SystemExit(0)
+PY
+    then
+        auth_probe_status=0
+    else
+        auth_probe_status=$?
+    fi
+
+    if [[ "${auth_probe_status}" -eq 10 || "${auth_probe_status}" -eq 11 || "${auth_probe_status}" -eq 20 ]]; then
+        needs_terminal=1
+    fi
 fi
 
 if [[ "${needs_terminal}" -eq 1 ]]; then
     if command -v xfce4-terminal >/dev/null 2>&1; then
-        exec xfce4-terminal --disable-server --command="bash -lc '/usr/bin/python3 \"${APP_PATH}\"; echo; read -p \"Pulsa Enter para cerrar...\" _'"
+        exec xfce4-terminal --disable-server --command="bash -lc '
+cd \"${APP_DIR}\"
+/usr/bin/python3 -c \"import warnings; warnings.filterwarnings(\\\"ignore\\\", category=FutureWarning, module=\\\"google.api_core._python_version_support\\\"); from core.auth import load_google_credentials; load_google_credentials(force_reauth=True)\"
+auth_status=\$?
+echo
+if [[ \${auth_status} -eq 0 ]]; then
+    echo \"Autenticación completada. Zyna Calendar se abrirá ahora.\"
+    nohup /usr/bin/python3 \"${APP_PATH}\" >/dev/null 2>&1 </dev/null &
+else
+    echo \"La autenticación no se completó. La app no se abrirá hasta que finalice correctamente.\"
+fi
+echo
+read -p \"Presione Enter para salir...\" _
+'"
     fi
 fi
 

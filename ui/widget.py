@@ -46,6 +46,7 @@ REFRESH_INTERVAL_MINUTES = 15
 POSITION_SAVE_DELAY_MS = 250
 NOTIFICATION_LEAD_MINUTES = 10
 NOTIFICATION_CHECK_INTERVAL_MS = 60 * 1000
+CACHE_WARNING_FLOOR_MINUTES = 30
 logger = logging.getLogger("zyna-calendar")
 
 
@@ -216,6 +217,7 @@ class CalendarWidget(QWidget):
         self._sync_thread: EventSyncThread | None = None
         self._current_events: list[CalendarEvent] = []
         self._notified_event_ids: set[str] = set()
+        self._last_sync_warning_key: str | None = None
         self._configure_position_persistence()
         self._build_ui()
         self._apply_window_settings()
@@ -316,6 +318,11 @@ class CalendarWidget(QWidget):
         self._status_label.setObjectName("status-label")
         self._status_label.setWordWrap(True)
 
+        self._sync_health_label = QLabel("")
+        self._sync_health_label.setObjectName("sync-health-label")
+        self._sync_health_label.setWordWrap(True)
+        self._sync_health_label.hide()
+
         self._events_container = QWidget()
         self._events_container.setObjectName("events-container")
         self._events_layout = QVBoxLayout(self._events_container)
@@ -328,6 +335,7 @@ class CalendarWidget(QWidget):
 
         card_layout.addLayout(header_layout)
         card_layout.addWidget(self._status_label)
+        card_layout.addWidget(self._sync_health_label)
         card_layout.addWidget(self._events_container)
         card_layout.addWidget(footer_label)
         root_layout.addWidget(card)
@@ -356,6 +364,15 @@ class CalendarWidget(QWidget):
             QLabel#status-label {
                 color: #a0a0a0;
                 font-size: 11px;
+            }
+            QLabel#sync-health-label {
+                color: #ffd27d;
+                font-size: 11px;
+                font-weight: 600;
+                background-color: rgba(120, 72, 10, 110);
+                border: 1px solid rgba(255, 190, 92, 120);
+                border-radius: 8px;
+                padding: 6px 8px;
             }
             QWidget#menu-button {
                 background: transparent;
@@ -463,6 +480,7 @@ class CalendarWidget(QWidget):
         self._clear_events()
         self._current_events = result.events
         self._prune_notified_events()
+        self._update_sync_health(result)
 
         if not result.events:
             self._status_label.setText(result.status_message)
@@ -493,6 +511,8 @@ class CalendarWidget(QWidget):
         self._clear_events()
         self._current_events = []
         self._prune_notified_events()
+        self._sync_health_label.setText("La sincronización con Google falló. Revisa credenciales o red.")
+        self._sync_health_label.show()
         self._status_label.setText(message)
         self._add_placeholder_label("Revisa tus credenciales o la red.")
         self._events_container.adjustSize()
@@ -629,6 +649,75 @@ class CalendarWidget(QWidget):
         active_event_ids = {event.event_id for event in self._current_events}
         self._notified_event_ids.intersection_update(active_event_ids)
 
+    def _update_sync_health(self, result: CalendarSyncResult) -> None:
+        """Show a visible warning when the widget is serving stale cached data."""
+
+        if not result.requires_attention:
+            self._sync_health_label.hide()
+            self._sync_health_label.clear()
+            self._last_sync_warning_key = None
+            return
+
+        warning_message = result.sync_warning.strip()
+        if result.is_from_cache and result.last_success_at is not None:
+            age_message = self._format_last_sync_age(result.last_success_at)
+            if age_message:
+                warning_message = f"{warning_message} {age_message}".strip()
+
+        self._sync_health_label.setText(warning_message)
+        self._sync_health_label.show()
+
+        warning_key = f"{result.status_message}|{warning_message}"
+        if warning_key != self._last_sync_warning_key:
+            self._send_sync_health_notification(result.status_message, warning_message)
+            self._last_sync_warning_key = warning_key
+
+    def _format_last_sync_age(self, last_success_at: datetime | None) -> str:
+        """Describe how old the last successful Google sync is."""
+
+        if last_success_at is None:
+            return ""
+
+        elapsed = datetime.now(LOCAL_TIMEZONE) - last_success_at
+        elapsed_minutes = max(0, int(elapsed.total_seconds() // 60))
+        threshold_minutes = max(
+            CACHE_WARNING_FLOOR_MINUTES,
+            int(self._settings.get("refresh_interval", REFRESH_INTERVAL_MINUTES)) * 2,
+        )
+        if elapsed_minutes < threshold_minutes:
+            return ""
+
+        if elapsed_minutes < 60:
+            return f"Ultima sincronización real con Google hace {elapsed_minutes} minutos."
+
+        hours, minutes = divmod(elapsed_minutes, 60)
+        if minutes == 0:
+            return f"Ultima sincronización real con Google hace {hours} horas."
+        return f"Ultima sincronización real con Google hace {hours} h {minutes} min."
+
+    def _send_sync_health_notification(self, title: str, message: str) -> None:
+        """Send a desktop notification for persistent sync-health warnings."""
+
+        if not message:
+            return
+
+        try:
+            subprocess.run(
+                [
+                    "notify-send",
+                    "--app-name=Zyna Calendar",
+                    title,
+                    message,
+                ],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except FileNotFoundError:
+            logger.warning("notify-send is not available in this environment")
+        except Exception:
+            logger.exception("Failed to send sync health notification")
+
     def _build_menu(self) -> QMenu:
         """Create the menu for sync, settings, and lifecycle actions."""
 
@@ -668,9 +757,14 @@ class CalendarWidget(QWidget):
         auth_command = (
             f"cd \"{app_root}\"; "
             f"\"{python_executable}\" -c "
-            "\"from core.auth import load_google_credentials; load_google_credentials()\"; "
+            "\"import warnings; "
+            "warnings.filterwarnings('ignore', category=FutureWarning, module='google.api_core._python_version_support'); "
+            "from core.auth import load_google_credentials; "
+            "load_google_credentials(force_reauth=True)\"; "
             f"\"{python_executable}\" -c "
-            "\"import httplib2; import googleapiclient.discovery; "
+            "\"import warnings; "
+            "warnings.filterwarnings('ignore', category=FutureWarning, module='google.api_core._python_version_support'); "
+            "import httplib2; import googleapiclient.discovery; "
             "print(\\\"Conexión lista para sincronizar\\\")\"; "
             "echo; read -p \\\"Pulsa Enter para cerrar...\\\" _"
         )

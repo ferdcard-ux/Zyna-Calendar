@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.1.5
+
+- La terminal de autenticacion ya no mantiene viva la app como proceso hijo.
+- Tras autenticar correctamente, Zyna Calendar se lanza desacoplado y la terminal muestra "Presione Enter para salir".
+- Cerrar la terminal despues de autenticar ya no cierra el widget.
+
+## 0.1.4
+
+- El lanzador ahora detecta tokens revocados antes del arranque y abre la terminal de reautorizacion cuando hace falta.
+- Se evita que la app quede silenciosa al iniciarse desde el menu con credenciales vencidas.
+
+## 0.1.3
+
+- La app ahora distingue de forma visible entre sincronizacion normal, uso de cache y autenticacion vencida.
+- Se muestra la antiguedad de la ultima sincronizacion real con Google cuando los eventos provienen de cache.
+- La UI eleva una advertencia persistente y una notificacion cuando la sincronizacion requiere atencion.
+- El flujo de autenticacion fuerza reautorizacion limpia cuando Google revoca el refresh token.
+
 ## 0.1.2
 
 - Instalador refuerza dependencias con pip --user y valida imports.

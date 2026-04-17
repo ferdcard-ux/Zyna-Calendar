@@ -125,22 +125,31 @@ def get_event_cache_path() -> Path:
 def load_event_cache() -> list[dict[str, Any]]:
     """Load the cached event payload or return an empty list."""
 
+    snapshot = load_event_cache_snapshot()
+    events = snapshot.get("events", [])
+    if isinstance(events, list):
+        return events
+
+    return []
+
+
+def load_event_cache_snapshot() -> dict[str, Any]:
+    """Load the full cache payload including metadata."""
+
     cache_path = get_event_cache_path()
     if not cache_path.exists():
-        return []
+        return {}
 
     try:
         with cache_path.open("r", encoding="utf-8") as file_pointer:
             payload = json.load(file_pointer)
     except (json.JSONDecodeError, OSError):
-        return []
+        return {}
 
     if isinstance(payload, dict):
-        events = payload.get("events", [])
-        if isinstance(events, list):
-            return events
+        return payload
 
-    return []
+    return {}
 
 
 def save_event_cache(events: list[dict[str, Any]]) -> None:

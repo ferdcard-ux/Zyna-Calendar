@@ -29,7 +29,7 @@
 
 ## El .deb no instala dependencias automaticamente
 
-- Usa `sudo apt install ./build_deb/zyna-calendar_0.1.2_all.deb` para resolver dependencias.
+- Usa `sudo apt install ./build_deb/zyna-calendar_0.1.5_all.deb` para resolver dependencias.
 - Alternativamente ejecuta `./build_deb/install.sh`.
 
 ## Como desinstalo el widget

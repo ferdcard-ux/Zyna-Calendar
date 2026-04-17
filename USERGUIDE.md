@@ -40,7 +40,7 @@ Se envia una notificacion cuando falta menos de 10 minutos para el proximo event
 Opcion recomendada (resuelve dependencias automaticamente):
 
 ```bash
-sudo apt install ./build_deb/zyna-calendar_0.1.2_all.deb
+sudo apt install ./build_deb/zyna-calendar_0.1.5_all.deb
 ```
 
 Instalacion automatizada:
