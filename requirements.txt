@@ -1,6 +1,7 @@
-PyQt6==6.10.2
-google-api-python-client==2.193.0
-google-auth==2.49.1
-google-auth-httplib2==0.3.0
-google-auth-oauthlib==1.3.0
-
+# Dependencias de la aplicacion.
+# Mantener compatibilidad con Python 3.10+ y 3.12+.
+PyQt6>=6.10.2
+google-api-python-client>=2.193.0
+google-auth>=2.49.1
+google-auth-httplib2>=0.3.0
+google-auth-oauthlib>=1.3.0

@@ -10,16 +10,20 @@ PYTHON_BIN="${PYTHON_BIN:-python3}"
 
 echo "Instalando Zyna-Calendar en: $PROJECT_ROOT"
 
-"$PYTHON_BIN" -m venv "$VENV_PATH"
+# Entorno virtual aislado para las dependencias de Google API.
+# --system-site-packages hereda PyQt6 instalado por el sistema y evita
+# el bloqueo global de pip en entornos PEP 668.
+"$PYTHON_BIN" -m venv --system-site-packages "$VENV_PATH"
 "$VENV_PATH/bin/pip" install --upgrade pip
 "$VENV_PATH/bin/pip" install -r "$PROJECT_ROOT/requirements.txt"
 
-echo "Instalando dependencias adicionales en el entorno de usuario..."
-"$PYTHON_BIN" -m pip install --user google-api-python-client google-auth-httplib2 google-auth-oauthlib uritemplate httplib2
-"$PYTHON_BIN" -c "import googleapiclient; print('Listo, Zyna ya tiene sus librerías')"
+echo "Verificando importaciones dentro del entorno virtual..."
+"$VENV_PATH/bin/python" -c "import PyQt6.QtWidgets; print('PyQt6 OK')"
+"$VENV_PATH/bin/python" -c "import googleapiclient; print('googleapiclient OK')"
 
 chmod +x "$PROJECT_ROOT/main.py"
 chmod +x "$PROJECT_ROOT/install.sh"
+chmod +x "$PROJECT_ROOT/zyna-calendar"
 
 mkdir -p "$AUTOSTART_DIR"
 

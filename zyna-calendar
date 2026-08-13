@@ -9,69 +9,72 @@ APP_PATH="/opt/zyna-calendar/main.py"
 APP_DIR="/opt/zyna-calendar"
 TOKEN_PATH="${HOME}/.config/zyna-calendar/token.json"
 
-needs_terminal=0
-if [[ ! -f "${TOKEN_PATH}" ]]; then
-    needs_terminal=1
-elif ! grep -q '"refresh_token"' "${TOKEN_PATH}" 2>/dev/null; then
-    needs_terminal=1
+# Resuelve el intérprete: prioridad al venv interno de la app.
+if [[ -x "${APP_DIR}/venv/bin/python3" ]]; then
+    PYTHON="${APP_DIR}/venv/bin/python3"
+elif command -v python3 >/dev/null 2>&1; then
+    PYTHON="$(command -v python3)"
 else
-    auth_probe_status=0
-    if /usr/bin/python3 - <<'PY'
-import warnings
-from pathlib import Path
+    echo "No se encontro un intérprete de Python." >&2
+    exit 1
+fi
 
-from google.auth.exceptions import RefreshError
-from google.auth.transport.requests import Request
-from google.oauth2.credentials import Credentials
+PROBE_CODE="import sys, warnings; \
+warnings.filterwarnings('ignore', category=FutureWarning, module='google.api_core._python_version_support'); \
+from core.auth import launcher_exit_code, probe_token_state; \
+sys.exit(launcher_exit_code(probe_token_state()))"
 
-warnings.filterwarnings(
-    "ignore",
-    category=FutureWarning,
-    module="google.api_core._python_version_support",
-)
+needs_terminal=0
+auth_probe_status=0
+if ! (cd "${APP_DIR}" && "${PYTHON}" -c "${PROBE_CODE}" 2>/dev/null); then
+    auth_probe_status=$?
+fi
 
-token_path = Path.home() / ".config" / "zyna-calendar" / "token.json"
-if not token_path.exists():
-    raise SystemExit(10)
-
-credentials = Credentials.from_authorized_user_file(
-    str(token_path),
-    scopes=["https://www.googleapis.com/auth/calendar.readonly"],
-)
-if not credentials.refresh_token:
-    raise SystemExit(11)
-
-if credentials.expired:
-    try:
-        credentials.refresh(Request())
-    except RefreshError:
-        raise SystemExit(20)
-    except Exception:
-        raise SystemExit(0)
-
-raise SystemExit(0)
-PY
-    then
-        auth_probe_status=0
-    else
-        auth_probe_status=$?
-    fi
-
-    if [[ "${auth_probe_status}" -eq 10 || "${auth_probe_status}" -eq 11 || "${auth_probe_status}" -eq 20 ]]; then
-        needs_terminal=1
-    fi
+# 10=sin token, 11=sin refresh_token, 20=token revocado. Requieren terminal.
+# 30=problema de red/DNS: se permite arrancar la app en modo offline/caché.
+if [[ "${auth_probe_status}" -eq 10 || "${auth_probe_status}" -eq 11 || "${auth_probe_status}" -eq 20 ]]; then
+    needs_terminal=1
 fi
 
 if [[ "${needs_terminal}" -eq 1 ]]; then
-    if command -v xfce4-terminal >/dev/null 2>&1; then
-        exec xfce4-terminal --disable-server --command="bash -lc '
+    terminal_cmd=""
+    for term in xfce4-terminal mate-terminal gnome-terminal tilix x-terminal-emulator; do
+        if command -v "${term}" >/dev/null 2>&1; then
+            terminal_cmd="${term}"
+            break
+        fi
+    done
+
+    if [[ -z "${terminal_cmd}" ]]; then
+        echo "No se encontro un emulador de terminal. Ejecuta manualmente:" >&2
+        echo "  cd ${APP_DIR} && ${PYTHON} -c 'from core.auth import load_google_credentials; load_google_credentials(force_reauth=True)'" >&2
+        exit 1
+    fi
+
+    if [[ "${terminal_cmd}" == "x-terminal-emulator" ]]; then
+        exec "${terminal_cmd}" -e bash -lc "
+cd '${APP_DIR}'
+${PYTHON} -c 'from core.auth import load_google_credentials; load_google_credentials(force_reauth=True)'
+auth_status=\$?
+echo
+if [[ \${auth_status} -eq 0 ]]; then
+    echo 'Autenticación completada. Zyna Calendar se abrirá ahora.'
+    nohup '${PYTHON}' '${APP_PATH}' >/dev/null 2>&1 </dev/null &
+else
+    echo 'La autenticación no se completó. La app no se abrirá hasta que finalice correctamente.'
+fi
+echo
+read -p 'Presione Enter para salir...' _
+"
+    else
+        exec "${terminal_cmd}" --disable-server --command="bash -lc '
 cd \"${APP_DIR}\"
-/usr/bin/python3 -c \"import warnings; warnings.filterwarnings(\\\"ignore\\\", category=FutureWarning, module=\\\"google.api_core._python_version_support\\\"); from core.auth import load_google_credentials; load_google_credentials(force_reauth=True)\"
+${PYTHON} -c \"import warnings; warnings.filterwarnings(\\\"ignore\\\", category=FutureWarning, module=\\\"google.api_core._python_version_support\\\"); from core.auth import load_google_credentials; load_google_credentials(force_reauth=True)\"
 auth_status=\$?
 echo
 if [[ \${auth_status} -eq 0 ]]; then
     echo \"Autenticación completada. Zyna Calendar se abrirá ahora.\"
-    nohup /usr/bin/python3 \"${APP_PATH}\" >/dev/null 2>&1 </dev/null &
+    nohup ${PYTHON} \"${APP_PATH}\" >/dev/null 2>&1 </dev/null &
 else
     echo \"La autenticación no se completó. La app no se abrirá hasta que finalice correctamente.\"
 fi
@@ -81,4 +84,4 @@ read -p \"Presione Enter para salir...\" _
     fi
 fi
 
-exec /usr/bin/python3 "${APP_PATH}"
+exec "${PYTHON}" "${APP_PATH}"

@@ -10,15 +10,16 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from google.auth.exceptions import RefreshError
-from googleapiclient.errors import HttpError
+from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import Resource, build
+from googleapiclient.errors import HttpError
 from httplib2 import ServerNotFoundError
 
-from core.auth import MissingCredentialsError, SCOPES, load_google_credentials
-from google.oauth2.credentials import Credentials
+from core.auth import SCOPES, MissingCredentialsError, load_google_credentials
 from utils.config import load_event_cache, load_event_cache_snapshot, save_event_cache
 
 LOCAL_TIMEZONE = ZoneInfo("America/Bogota")
+MAX_EVENTS_LIMIT = 8
 logger = logging.getLogger("zyna-calendar")
 
 
@@ -54,6 +55,12 @@ class CalendarClient:
         self._service: Resource | None = None
         self._credentials = credentials
 
+    @staticmethod
+    def _clamp_max_results(max_results: int) -> int:
+        """Clamp a requested event count into the valid 1..limit range."""
+
+        return max(1, min(MAX_EVENTS_LIMIT, int(max_results)))
+
     def list_upcoming_events(
         self,
         calendar_id: str = "primary",
@@ -69,7 +76,7 @@ class CalendarClient:
             A normalized sync result for the UI layer.
         """
 
-        normalized_max_results = max(1, min(5, int(max_results)))
+        normalized_max_results = self._clamp_max_results(int(max_results))
         now = datetime.now(timezone.utc).isoformat()
         try:
             response = (
@@ -212,7 +219,9 @@ class CalendarClient:
         if cached_events:
             if is_auth_error:
                 status_message = f"Autenticación vencida • usando caché{cache_suffix}"
-                sync_warning = "La app perdió acceso a Google Calendar. Usa 'Refresh Token' para reconectar."
+                sync_warning = (
+                    "La app perdió acceso a Google Calendar. Usa 'Refresh Token' para reconectar."
+                )
             elif is_network_error:
                 status_message = f"Sin conexión • usando caché{cache_suffix}"
                 sync_warning = "Mostrando datos guardados localmente hasta recuperar la conexión."
