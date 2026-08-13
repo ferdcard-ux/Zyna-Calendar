@@ -2,7 +2,31 @@
 
 set -euo pipefail
 
-chmod +x /opt/zyna-calendar/main.py
+APP_DIR="/opt/zyna-calendar"
+VENV_PATH="${APP_DIR}/venv"
+
+chmod +x "${APP_DIR}/main.py"
+chmod +x "${APP_DIR}/uninstall.sh"
+
+if [[ -f "${APP_DIR}/zyna-calendar" ]]; then
+    chmod +x "${APP_DIR}/zyna-calendar"
+fi
+if [[ -f "/usr/bin/zyna-calendar" ]]; then
+    chmod +x "/usr/bin/zyna-calendar"
+fi
+
+# Construye el entorno virtual con las dependencias de Google API.
+# --system-site-packages hereda PyQt6 del sistema y evita el bloqueo
+# global de pip de PEP 668.
+if [[ ! -x "${VENV_PATH}/bin/python3" ]]; then
+    /usr/bin/python3 -m venv --system-site-packages "${VENV_PATH}"
+fi
+"${VENV_PATH}/bin/pip" install --upgrade pip
+"${VENV_PATH}/bin/pip" install \
+    'google-api-python-client>=2' \
+    'google-auth>=2' \
+    'google-auth-httplib2>=0.3' \
+    'google-auth-oauthlib>=1'
 
 if command -v gtk-update-icon-cache >/dev/null 2>&1; then
     gtk-update-icon-cache -f /usr/share/icons/hicolor >/dev/null 2>&1 || true

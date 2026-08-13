@@ -3,7 +3,7 @@
 set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-VERSION="0.1.5"
+VERSION="0.1.8"
 BUILD_ROOT="$PROJECT_ROOT/build_deb"
 PKG_ROOT="$BUILD_ROOT/pkgroot"
 DEBIAN_DIR="$PKG_ROOT/DEBIAN"
@@ -18,7 +18,9 @@ mkdir -p "$DEBIAN_DIR" "$APP_DIR" "$BIN_DIR" "$ICON_DIR" "$APP_DESKTOP_DIR"
 cp -r "$PROJECT_ROOT/core" "$APP_DIR/"
 cp -r "$PROJECT_ROOT/ui" "$APP_DIR/"
 cp -r "$PROJECT_ROOT/utils" "$APP_DIR/"
+find "$APP_DIR" -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
 cp "$PROJECT_ROOT/main.py" "$APP_DIR/"
+cp "$PROJECT_ROOT/requirements.txt" "$APP_DIR/"
 cp "$PROJECT_ROOT/icon-128x128.png" "$APP_DIR/"
 cp "$PROJECT_ROOT/uninstall.sh" "$APP_DIR/"
 cp "$PROJECT_ROOT/zyna-calendar" "$BIN_DIR/zyna-calendar"

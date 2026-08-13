@@ -28,11 +28,16 @@ ENV/
 build_deb/pkgroot/
 build_deb/*.deb.tmp
 build_deb/*.tar.*
+*.deb
 
 # Autenticación y Secretos
 token.json
 credentials.json
 .env
 
-# Archivos de notas de cambios.
+# Documentos de desarrollo personal (no se publican)
+BITACORA.md
+PLAN_DE_MEJORAS.md
 Fix.txt
+Not-Fix.txt
+.github/instructions/
