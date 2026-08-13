@@ -29,6 +29,7 @@ build_deb/pkgroot/
 build_deb/*.deb.tmp
 build_deb/*.tar.*
 *.deb
+build_deb/*.sha256
 
 # Autenticación y Secretos
 token.json
