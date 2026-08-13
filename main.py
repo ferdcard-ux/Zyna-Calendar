@@ -19,12 +19,12 @@ warnings.filterwarnings(
     module="google.api_core._python_version_support",
 )
 
-from PyQt6.QtWidgets import QApplication
+from PyQt6.QtWidgets import QApplication  # noqa: E402
 
-from core.auth import MissingCredentialsError, load_google_credentials
-from core.calendar_service import CalendarClient
-from ui.widget import CalendarWidget
-from utils.config import configure_logging, load_settings
+from core.auth import MissingCredentialsError, load_google_credentials  # noqa: E402
+from core.calendar_service import CalendarClient  # noqa: E402
+from ui.widget import CalendarWidget  # noqa: E402
+from utils.config import configure_logging, load_settings  # noqa: E402
 
 
 def main() -> int:
@@ -40,16 +40,11 @@ def main() -> int:
         print(f"No se pudo completar la autenticación: {error}")
         return 1
 
+    settings = load_settings()
     calendar_client = CalendarClient(credentials=credentials)
 
     app = QApplication(sys.argv)
-    widget = CalendarWidget(
-        events_provider=lambda: calendar_client.list_upcoming_events(
-            calendar_id=load_settings()["calendar_id"],
-            max_results=int(load_settings()["max_events"]),
-        ),
-        settings=load_settings(),
-    )
+    widget = CalendarWidget(calendar_client=calendar_client, settings=settings)
     widget.show()
 
     return app.exec()

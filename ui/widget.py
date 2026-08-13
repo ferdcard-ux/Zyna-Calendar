@@ -4,73 +4,81 @@ from __future__ import annotations
 
 import logging
 import os
-import shutil
 import subprocess
 import sys
 import webbrowser
-from pathlib import Path
 from collections.abc import Callable
 from datetime import datetime, timedelta
 from typing import Any
 
-from PyQt6.QtCore import QObject, QEvent, QPoint, QThread, QTimer, Qt, pyqtSignal
+from PyQt6.QtCore import QEvent, QObject, QPoint, QRect, Qt, QThread, QTimer, pyqtSignal
 from PyQt6.QtGui import (
     QAction,
-    QColor,
     QCloseEvent,
+    QColor,
+    QEnterEvent,
     QGuiApplication,
     QIcon,
     QMouseEvent,
+    QMoveEvent,
     QPainter,
+    QPaintEvent,
     QPen,
     QPixmap,
 )
 from PyQt6.QtWidgets import (
+    QApplication,
+    QDialog,
     QFrame,
     QHBoxLayout,
-    QMenu,
     QLabel,
+    QMenu,
     QSizePolicy,
-    QDialog,
     QVBoxLayout,
     QWidget,
 )
 
-from core.auth import MissingCredentialsError
-from core.calendar_service import CalendarEvent, CalendarSyncResult, LOCAL_TIMEZONE
+from core.auth import MissingCredentialsError, init_manual_auth
+from core.calendar_service import (
+    LOCAL_TIMEZONE,
+    CalendarClient,
+    CalendarEvent,
+    CalendarSyncResult,
+)
+from ui.auth_dialog import AuthDialog
 from ui.config_dialog import ConfigDialog
-from utils.config import get_app_icon_path, load_settings, save_window_position
+from ui.update_dialog import UpdateDialog
+from utils.config import (
+    APP_VERSION,
+    DEFAULT_OPACITY,
+    MAX_OPACITY,
+    MIN_OPACITY,
+    get_app_icon_path,
+    get_theme_palette,
+    load_settings,
+    rgba_string,
+    save_window_position,
+)
 from utils.datetime_helpers import format_event_datetime
+from utils.update_checker import (
+    ReleaseInfo,
+    UpdateCheckError,
+    fetch_latest_release,
+    is_newer_version,
+)
 
 REFRESH_INTERVAL_MINUTES = 15
 POSITION_SAVE_DELAY_MS = 250
 NOTIFICATION_LEAD_MINUTES = 10
 NOTIFICATION_CHECK_INTERVAL_MS = 60 * 1000
 CACHE_WARNING_FLOOR_MINUTES = 30
+CLICK_DRAG_THRESHOLD = 6
+TODAY_OPACITY_REDUCTION = 25
+SOON_OPACITY_REDUCTION = 15
+SOON_WINDOW_DAYS = 2
+UPDATE_CHECK_INTERVAL_MS = 12 * 60 * 60 * 1000
+STARTUP_UPDATE_DELAY_MS = 15 * 1000
 logger = logging.getLogger("zyna-calendar")
-
-
-class ClickableLabel(QLabel):
-    """Minimal clickable label used for lightweight interactions."""
-
-    clicked = pyqtSignal()
-
-    def __init__(self, text: str = "", parent: QWidget | None = None) -> None:
-        """Initialize the clickable label."""
-
-        super().__init__(text, parent)
-        self.setCursor(Qt.CursorShape.PointingHandCursor)
-
-    def mouseReleaseEvent(self, event: QMouseEvent) -> None:  # noqa: N802
-        """Emit a signal when the label is released with the left button."""
-
-        if (
-            event.button() == Qt.MouseButton.LeftButton
-            and self.rect().contains(event.position().toPoint())
-        ):
-            self.clicked.emit()
-
-        super().mouseReleaseEvent(event)
 
 
 class EventSyncThread(QThread):
@@ -78,6 +86,7 @@ class EventSyncThread(QThread):
 
     sync_completed = pyqtSignal(object)
     sync_failed = pyqtSignal(str)
+
     def __init__(
         self,
         events_provider: Callable[[], CalendarSyncResult],
@@ -104,15 +113,67 @@ class EventSyncThread(QThread):
         self.sync_completed.emit(result)
 
 
+class SilentUpdateThread(QThread):
+    """Background thread that checks for a newer release without a dialog."""
+
+    update_available = pyqtSignal(object)
+    up_to_date = pyqtSignal()
+    check_failed = pyqtSignal(str)
+
+    def __init__(
+        self,
+        repo: str,
+        parent: QWidget | None = None,
+    ) -> None:
+        """Store the repository slug used for the request."""
+
+        super().__init__(parent)
+        self._repo = repo
+
+    def run(self) -> None:
+        """Fetch the latest release and compare versions."""
+
+        try:
+            release = fetch_latest_release(self._repo)
+        except UpdateCheckError as error:
+            self.check_failed.emit(str(error))
+            return
+        except Exception:  # pragma: no cover - defensive thread fallback
+            logger.exception("Unexpected error in silent update check")
+            self.check_failed.emit("No se pudo consultar las actualizaciones.")
+            return
+
+        if is_newer_version(release.version, APP_VERSION):
+            self.update_available.emit(release)
+        else:
+            self.up_to_date.emit()
+
+
 class EventCard(QWidget):
     """Compact event row rendered with labels and QPainter."""
 
-    def __init__(self, event: CalendarEvent, parent: QWidget | None = None) -> None:
-        """Build a single event card."""
+    def __init__(
+        self,
+        event: CalendarEvent,
+        parent: QWidget | None = None,
+        theme: dict[str, str] | None = None,
+        opacity: int | None = None,
+    ) -> None:
+        """Build a single event card.
+
+        Args:
+            event: Calendar event to render.
+            parent: Parent container widget.
+            theme: Active color palette keys ``bg``/``card``/``accent``.
+            opacity: Base opacity percentage for the card background.
+        """
 
         super().__init__(parent)
         self._event = event
         self._is_hovered = False
+        self._theme = dict(theme or {})
+        self._opacity = opacity if opacity is not None else DEFAULT_OPACITY
+        self._press_position: QPoint | None = None
         self.setObjectName("event-card")
         self.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
@@ -125,40 +186,76 @@ class EventCard(QWidget):
 
         return (self, self._title_label, self._time_label)
 
-    def paintEvent(self, event) -> None:  # noqa: N802
+    def paintEvent(self, event: QPaintEvent | None) -> None:  # noqa: N802
         """Draw the event background with a subtle hover transition."""
 
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
-        background_color = QColor(44, 51, 64, 168)
+        card_hex = self._theme.get("card", "#2C3340")
+        accent_hex = self._theme.get("accent", "#3572B6")
+        card_color = QColor(card_hex)
+        card_color.setAlpha(self._card_alpha())
         if self._is_hovered:
-            background_color = QColor(56, 65, 81, 188)
+            card_color = card_color.lighter(112)
 
-        border_color = QColor("#3572b6")
+        border_color = QColor(accent_hex)
         border_color.setAlpha(95)
 
         painter.setPen(QPen(border_color, 1))
-        painter.setBrush(background_color)
+        painter.setBrush(card_color)
         painter.drawRoundedRect(self.rect().adjusted(0, 0, -1, -1), 12, 12)
         super().paintEvent(event)
 
-    def enterEvent(self, event) -> None:  # noqa: N802
+    def enterEvent(self, event: QEnterEvent | None) -> None:  # noqa: N802
         """Activate hover styling when the pointer enters the card."""
 
         self._is_hovered = True
         self.update()
         super().enterEvent(event)
 
-    def leaveEvent(self, event) -> None:  # noqa: N802
+    def leaveEvent(self, event: QEvent | None) -> None:  # noqa: N802
         """Restore the base style when the pointer leaves the card."""
 
         self._is_hovered = False
         self.update()
         super().leaveEvent(event)
 
+    def mousePressEvent(self, event: QMouseEvent | None) -> None:  # noqa: N802
+        """Remember the press location to distinguish clicks from drags."""
+
+        if event is not None and event.button() == Qt.MouseButton.LeftButton:
+            self._press_position = event.globalPosition().toPoint()
+        super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event: QMouseEvent | None) -> None:  # noqa: N802
+        """Open the event link when the click was not a drag gesture."""
+
+        if (
+            event is not None
+            and event.button() == Qt.MouseButton.LeftButton
+            and self._was_click(event)
+        ):
+            self._open_event_link()
+        self._press_position = None
+        super().mouseReleaseEvent(event)
+
+    def _was_click(self, event: QMouseEvent) -> bool:
+        """Return True when the pointer barely moved between press and release."""
+
+        if self._press_position is None:
+            return False
+        released = event.globalPosition().toPoint()
+        return (released - self._press_position).manhattanLength() <= CLICK_DRAG_THRESHOLD
+
+    def _card_alpha(self) -> int:
+        """Convert the configured opacity percentage into an alpha channel."""
+
+        clamped = max(MIN_OPACITY, min(MAX_OPACITY, self._opacity))
+        return int(round(clamped * 255 / 100))
+
     def _build_ui(self) -> None:
-        """Create labels for title, time and browser link."""
+        """Create labels for title and time."""
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(12, 10, 12, 10)
@@ -180,13 +277,8 @@ class EventCard(QWidget):
         )
         self._time_label.setObjectName("event-time")
 
-        self._link_label = ClickableLabel("Abrir evento")
-        self._link_label.setObjectName("event-link")
-        self._link_label.clicked.connect(self._open_event_link)
-
         layout.addWidget(self._title_label)
         layout.addWidget(self._time_label)
-        layout.addWidget(self._link_label)
 
     def _open_event_link(self) -> None:
         """Open the Google Calendar event in the default browser."""
@@ -200,30 +292,49 @@ class CalendarWidget(QWidget):
 
     def __init__(
         self,
-        events_provider: Callable[[], CalendarSyncResult],
+        calendar_client: CalendarClient,
         settings: dict[str, Any],
     ) -> None:
         """Build the floating calendar widget.
 
         Args:
-            events_provider: Callable that returns the next calendar events.
+            calendar_client: Client used to query upcoming calendar events.
             settings: Local widget settings loaded from disk.
         """
 
         super().__init__()
-        self._events_provider = events_provider
+        self._calendar_client = calendar_client
         self._settings = settings
+        self._events_provider = self._make_events_provider()
+        self._theme = get_theme_palette(settings)
         self._drag_offset: QPoint | None = None
         self._sync_thread: EventSyncThread | None = None
+        self._refresh_timer: QTimer | None = None
         self._current_events: list[CalendarEvent] = []
         self._notified_event_ids: set[str] = set()
+        self._notified_today_ids: set[str] = set()
+        self._mini_icon: QWidget | None = None
+        self._minimized_geometry: QRect | None = None
         self._last_sync_warning_key: str | None = None
+        self._update_thread: SilentUpdateThread | None = None
         self._configure_position_persistence()
         self._build_ui()
         self._apply_window_settings()
         self._configure_refresh_timer()
         self._configure_notification_timer()
+        self._configure_update_timer()
         self.refresh_events()
+
+    def _make_events_provider(self) -> Callable[[], CalendarSyncResult]:
+        """Build a provider that always reads the current widget settings."""
+
+        def provider() -> CalendarSyncResult:
+            return self._calendar_client.list_upcoming_events(
+                calendar_id=str(self._settings.get("calendar_id", "primary")),
+                max_results=int(self._settings.get("max_events", 5)),
+            )
+
+        return provider
 
     def refresh_events(self) -> None:
         """Start a background sync if no sync is already running."""
@@ -241,47 +352,56 @@ class CalendarWidget(QWidget):
         self._sync_thread.finished.connect(self._handle_sync_finished)
         self._sync_thread.start()
 
-    def mousePressEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+    def mousePressEvent(self, event: QMouseEvent | None) -> None:  # noqa: N802
         """Capture the drag offset for the floating frameless widget."""
 
-        self._begin_drag(event)
-        super().mousePressEvent(event)
+        if event is not None:
+            self._begin_drag(event)
+        if event is not None:
+            super().mousePressEvent(event)
 
-    def mouseMoveEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+    def mouseMoveEvent(self, event: QMouseEvent | None) -> None:  # noqa: N802
         """Move the widget while the primary mouse button is pressed."""
 
-        self._drag_to(event)
-        super().mouseMoveEvent(event)
+        if event is not None:
+            self._drag_to(event)
+        if event is not None:
+            super().mouseMoveEvent(event)
 
-    def mouseReleaseEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+    def mouseReleaseEvent(self, event: QMouseEvent | None) -> None:  # noqa: N802
         """Reset the drag state and persist the latest widget position."""
 
-        self._finish_drag(event)
-        super().mouseReleaseEvent(event)
+        if event is not None:
+            self._finish_drag(event)
+        if event is not None:
+            super().mouseReleaseEvent(event)
 
-    def moveEvent(self, event) -> None:  # noqa: N802
+    def moveEvent(self, event: QMoveEvent | None) -> None:  # noqa: N802
         """Debounce persistence so the last dragged position survives restarts."""
 
         self._position_save_timer.start(POSITION_SAVE_DELAY_MS)
-        super().moveEvent(event)
+        if event is not None:
+            super().moveEvent(event)
 
-    def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802
+    def closeEvent(self, event: QCloseEvent | None) -> None:  # noqa: N802
         """Save the last window position before closing the widget."""
 
         self._persist_position()
         if self._sync_thread is not None and self._sync_thread.isRunning():
             self._sync_thread.wait(500)
-        super().closeEvent(event)
+        if event is not None:
+            super().closeEvent(event)
 
-    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+    def eventFilter(self, watched: QObject | None, event: QEvent | None) -> bool:
         """Forward mouse drag events from child widgets to the window."""
 
-        if event.type() == QEvent.Type.MouseButtonPress:
-            self._begin_drag(event)
-        elif event.type() == QEvent.Type.MouseMove:
-            self._drag_to(event)
-        elif event.type() == QEvent.Type.MouseButtonRelease:
-            self._finish_drag(event)
+        if isinstance(event, QMouseEvent):
+            if event.type() == QEvent.Type.MouseButtonPress:
+                self._begin_drag(event)
+            elif event.type() == QEvent.Type.MouseMove:
+                self._drag_to(event)
+            elif event.type() == QEvent.Type.MouseButtonRelease:
+                self._finish_drag(event)
 
         return super().eventFilter(watched, event)
 
@@ -346,26 +466,36 @@ class CalendarWidget(QWidget):
         self._register_drag_handle(self._status_label)
         self._register_drag_handle(footer_label)
 
-        self.setStyleSheet(
-            """
-            QWidget#calendar-widget {
+        self.setStyleSheet(self._build_stylesheet())
+
+    def _build_stylesheet(self) -> str:
+        """Build the Qt stylesheet from the active theme and opacity."""
+
+        bg_alpha = self._alpha_from_opacity()
+        text_color = self._theme.get("text", "#FFFFFF")
+        muted_text = rgba_string(text_color, 175)
+        accent = self._theme.get("accent", "#3572B6")
+        bg = rgba_string(self._theme.get("bg", "#1E232D"), bg_alpha)
+
+        return f"""
+            QWidget#calendar-widget {{
                 background: transparent;
-            }
-            QFrame#calendar-card {
-                background-color: rgba(30, 35, 45, 200);
-                border: 1px solid #3572b6;
+            }}
+            QFrame#calendar-card {{
+                background-color: {bg};
+                border: 1px solid {accent};
                 border-radius: 12px;
-            }
-            QLabel#title-label {
-                color: #ffffff;
+            }}
+            QLabel#title-label {{
+                color: {text_color};
                 font-size: 17px;
                 font-weight: 600;
-            }
-            QLabel#status-label {
-                color: #a0a0a0;
+            }}
+            QLabel#status-label {{
+                color: {muted_text};
                 font-size: 11px;
-            }
-            QLabel#sync-health-label {
+            }}
+            QLabel#sync-health-label {{
                 color: #ffd27d;
                 font-size: 11px;
                 font-weight: 600;
@@ -373,51 +503,48 @@ class CalendarWidget(QWidget):
                 border: 1px solid rgba(255, 190, 92, 120);
                 border-radius: 8px;
                 padding: 6px 8px;
-            }
-            QWidget#menu-button {
+            }}
+            QWidget#menu-button {{
                 background: transparent;
-            }
-            QWidget#events-container {
+            }}
+            QWidget#events-container {{
                 background: transparent;
-            }
-            QLabel#event_summary {
+            }}
+            QLabel#event_summary {{
                 background: transparent;
-                color: #ffffff;
+                color: {text_color};
                 font-size: 13px;
                 font-weight: 600;
-                margin-top: -6px;    /* <--- Desplazarlo hacia arriba */
+                margin-top: -6px;
                 padding-top: 0px;
-                padding-bottom: 0px; /* Mantenerlo alineado con los bordes (y, g, p) */
-            }
+                padding-bottom: 0px;
+            }}
             QLabel#event-time,
-            QLabel#footer-label {
+            QLabel#footer-label {{
                 background: transparent;
-                color: #a0a0a0;
+                color: {muted_text};
                 font-size: 11px;
-            }
-            QLabel#event-link {
-                background: transparent;
-                color: #7fb2ff;
-                font-size: 11px;
-                font-weight: 600;
-            }
-            QLabel#event-link:hover {
-                color: #ffffff;
-            }
-            QMenu {
-                background-color: rgba(30, 35, 45, 235);
-                color: #ffffff;
-                border: 1px solid #3572b6;
+            }}
+            QMenu {{
+                background-color: {bg};
+                color: {text_color};
+                border: 1px solid {accent};
                 border-radius: 10px;
-            }
-            QMenu::item {
+            }}
+            QMenu::item {{
                 padding: 6px 18px;
-            }
-            QMenu::item:selected {
-                background-color: rgba(53, 114, 182, 160);
-            }
+            }}
+            QMenu::item:selected {{
+                background-color: {rgba_string(accent, 160)};
+            }}
             """
-        )
+
+    def _alpha_from_opacity(self) -> int:
+        """Convert the configured opacity percentage into an alpha channel."""
+
+        opacity = int(self._settings.get("opacity", DEFAULT_OPACITY))
+        clamped = max(MIN_OPACITY, min(MAX_OPACITY, opacity))
+        return int(round(clamped * 255 / 100))
 
     def _apply_window_settings(self) -> None:
         """Apply frameless and transparent window options."""
@@ -427,11 +554,7 @@ class CalendarWidget(QWidget):
             "WindowStaysAtBottomHint",
             Qt.WindowType.WindowStaysOnBottomHint,
         )
-        flags = (
-            Qt.WindowType.FramelessWindowHint
-            | bottom_hint
-            | Qt.WindowType.Tool
-        )
+        flags = Qt.WindowType.FramelessWindowHint | bottom_hint | Qt.WindowType.Tool
         self.setWindowFlags(flags)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setFixedWidth(int(self._settings["window_width"]))
@@ -468,11 +591,55 @@ class CalendarWidget(QWidget):
         self._position_save_timer.timeout.connect(self._persist_position)
 
     def _configure_notification_timer(self) -> None:
-        """Check periodically whether the next event is close enough to notify."""
+        """Check periodically for upcoming and today event notifications."""
 
         self._notification_timer = QTimer(self)
         self._notification_timer.timeout.connect(self._check_upcoming_event_notification)
+        self._notification_timer.timeout.connect(self._notify_today_events)
         self._notification_timer.start(NOTIFICATION_CHECK_INTERVAL_MS)
+
+    def _configure_update_timer(self) -> None:
+        """Schedule a silent update check at startup and every 12 hours."""
+
+        self._update_timer = QTimer(self)
+        self._update_timer.timeout.connect(self._check_for_updates_silent)
+        self._update_timer.start(UPDATE_CHECK_INTERVAL_MS)
+
+        if self._update_checks_enabled():
+            QTimer.singleShot(STARTUP_UPDATE_DELAY_MS, self._check_for_updates_silent)
+
+    def _update_checks_enabled(self) -> bool:
+        """Return True when a repo is set and auto-check is enabled."""
+
+        repo = str(self._settings.get("update_repo", "")).strip()
+        return bool(repo) and bool(self._settings.get("update_auto_check", True))
+
+    def _check_for_updates_silent(self) -> None:
+        """Start a background check that only notifies when a newer version exists."""
+
+        repo = str(self._settings.get("update_repo", "")).strip()
+        if not repo:
+            return
+        if self._update_thread is not None and self._update_thread.isRunning():
+            return
+
+        self._update_thread = SilentUpdateThread(repo, self)
+        self._update_thread.update_available.connect(self._on_update_available)
+        self._update_thread.check_failed.connect(self._on_update_check_failed)
+        self._update_thread.start()
+
+    def _on_update_available(self, release: ReleaseInfo) -> None:
+        """Show a desktop notification when a newer release exists."""
+
+        self._notify_send(
+            "Actualizacion disponible",
+            f"Zyna-Calendar {release.version} esta listo para instalar.",
+        )
+
+    def _on_update_check_failed(self, message: str) -> None:
+        """Log a failed silent check without bothering the user."""
+
+        logger.info("Silent update check skipped: %s", message)
 
     def _render_sync_result(self, result: CalendarSyncResult) -> None:
         """Replace the event list after a successful sync or cache fallback."""
@@ -490,20 +657,27 @@ class CalendarWidget(QWidget):
             elif "Sin conexión" in result.status_message:
                 placeholder_text = "Sin conexión y sin caché local."
             self._add_placeholder_label(placeholder_text)
+            self._auto_resize()
+            self._ensure_on_screen()
             return
 
         self._status_label.setText(result.status_message)
 
         for event in result.events:
-            event_card = EventCard(event, self._events_container)
+            event_card = EventCard(
+                event,
+                self._events_container,
+                theme=self._theme,
+                opacity=self._card_opacity_for(event),
+            )
             self._events_layout.addWidget(event_card)
             for drag_handle in event_card.drag_handles:
                 self._register_drag_handle(drag_handle)
 
-        self._events_container.adjustSize()
-        self.adjustSize()
+        self._auto_resize()
         self._ensure_on_screen()
         self._check_upcoming_event_notification()
+        self._notify_today_events()
 
     def _render_error(self, message: str) -> None:
         """Show a lightweight error state when sync fails."""
@@ -511,12 +685,13 @@ class CalendarWidget(QWidget):
         self._clear_events()
         self._current_events = []
         self._prune_notified_events()
-        self._sync_health_label.setText("La sincronización con Google falló. Revisa credenciales o red.")
+        self._sync_health_label.setText(
+            "La sincronización con Google falló. Revisa credenciales o red."
+        )
         self._sync_health_label.show()
         self._status_label.setText(message)
         self._add_placeholder_label("Revisa tus credenciales o la red.")
-        self._events_container.adjustSize()
-        self.adjustSize()
+        self._auto_resize()
         self._ensure_on_screen()
 
     def _handle_sync_finished(self) -> None:
@@ -532,6 +707,8 @@ class CalendarWidget(QWidget):
 
         while self._events_layout.count():
             item = self._events_layout.takeAt(0)
+            if item is None:
+                continue
             widget = item.widget()
             if widget is not None:
                 widget.deleteLater()
@@ -543,6 +720,61 @@ class CalendarWidget(QWidget):
         placeholder.setObjectName("event-time")
         placeholder.setWordWrap(True)
         self._events_layout.addWidget(placeholder)
+
+    def _card_opacity_for(self, event: CalendarEvent) -> int:
+        """Return the card opacity emphasizing today and soon events."""
+
+        base_opacity = int(self._settings.get("opacity", DEFAULT_OPACITY))
+        days_until = (event.start_at.date() - datetime.now(LOCAL_TIMEZONE).date()).days
+        if days_until <= 0:
+            return max(MIN_OPACITY, base_opacity - TODAY_OPACITY_REDUCTION)
+        if days_until <= SOON_WINDOW_DAYS:
+            return max(MIN_OPACITY, base_opacity - SOON_OPACITY_REDUCTION)
+        return base_opacity
+
+    def _auto_resize(self) -> None:
+        """Resize the widget so it grows and shrinks with the event count."""
+
+        events_height = self._events_content_height()
+        self._events_container.setFixedHeight(events_height)
+        self.setMinimumHeight(0)
+        self.adjustSize()
+
+    def _events_content_height(self) -> int:
+        """Return the height needed to lay out every row in the events list."""
+
+        spacing = self._events_layout.spacing()
+        total_height = 0
+        row_count = 0
+        for index in range(self._events_layout.count()):
+            item = self._events_layout.itemAt(index)
+            if item is None:
+                continue
+            widget = item.widget()
+            if widget is None:
+                continue
+            row_count += 1
+            hint = widget.sizeHint().height()
+            if hint <= 0:
+                hint = widget.minimumHeight()
+            total_height += max(hint, widget.minimumHeight())
+
+        if row_count > 1 and spacing > 0:
+            total_height += (row_count - 1) * spacing
+        return total_height
+
+    def _notify_today_events(self) -> None:
+        """Send a persistent desktop notification for events happening today."""
+
+        today = datetime.now(LOCAL_TIMEZONE).date()
+        today_events = [
+            event
+            for event in self._current_events
+            if event.start_at.date() == today and event.event_id not in self._notified_today_ids
+        ]
+        for event in today_events:
+            self._send_today_event_notification(event)
+            self._notified_today_ids.add(event.event_id)
 
     def _set_sync_enabled(self, is_enabled: bool) -> None:
         """Toggle the manual sync label state."""
@@ -614,26 +846,46 @@ class CalendarWidget(QWidget):
 
         time_until_event = next_event.start_at - now
         if (
-            timedelta()
-            <= time_until_event
-            <= timedelta(minutes=NOTIFICATION_LEAD_MINUTES)
+            timedelta() <= time_until_event <= timedelta(minutes=NOTIFICATION_LEAD_MINUTES)
             and next_event.event_id not in self._notified_event_ids
         ):
             self._send_desktop_notification(next_event)
             self._notified_event_ids.add(next_event.event_id)
 
-    def _send_desktop_notification(self, event: CalendarEvent) -> None:
+    def _send_desktop_notification(
+        self,
+        event: CalendarEvent,
+        title: str = "Próximo evento",
+        persistent: bool = False,
+    ) -> None:
         """Send a native Linux notification using notify-send."""
 
         notification_body = f"{event.title}\nComienza a las {event.start_at.strftime('%H:%M')}"
+        self._notify_send(title, notification_body, persistent=persistent)
+
+    def _send_today_event_notification(self, event: CalendarEvent) -> None:
+        """Send a persistent desktop notification for a today event."""
+
+        if event.is_all_day:
+            notification_body = f"{event.title}\nEvento de todo el día"
+        else:
+            notification_body = f"{event.title}\nHoy a las {event.start_at.strftime('%H:%M')}"
+        self._notify_send("Evento de hoy", notification_body, persistent=True)
+
+    def _notify_send(self, title: str, body: str, persistent: bool = False) -> None:
+        """Run notify-send with optional persistent (non-expiring) notification."""
+
+        command = [
+            "notify-send",
+            "--app-name=Zyna Calendar",
+            title,
+            body,
+        ]
+        if persistent:
+            command.insert(2, "--expire-time=0")
         try:
             subprocess.run(
-                [
-                    "notify-send",
-                    "--app-name=Zyna Calendar",
-                    "Próximo evento",
-                    notification_body,
-                ],
+                command,
                 check=False,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
@@ -648,6 +900,7 @@ class CalendarWidget(QWidget):
 
         active_event_ids = {event.event_id for event in self._current_events}
         self._notified_event_ids.intersection_update(active_event_ids)
+        self._notified_today_ids.intersection_update(active_event_ids)
 
     def _update_sync_health(self, result: CalendarSyncResult) -> None:
         """Show a visible warning when the widget is serving stale cached data."""
@@ -735,6 +988,10 @@ class CalendarWidget(QWidget):
         config_action.triggered.connect(self._open_config_dialog)
         menu.addAction(config_action)
 
+        update_action = QAction("Buscar actualizaciones", self)
+        update_action.triggered.connect(self._open_update_dialog)
+        menu.addAction(update_action)
+
         info_action = QAction("Info", self)
         info_action.triggered.connect(self._open_info_dialog)
         menu.addAction(info_action)
@@ -743,50 +1000,38 @@ class CalendarWidget(QWidget):
         restart_action.triggered.connect(self._restart_applet)
         menu.addAction(restart_action)
 
+        minimize_action = QAction("Minimizar", self)
+        minimize_action.triggered.connect(self._minimize_to_icon)
+        menu.addAction(minimize_action)
+
         exit_action = QAction("Salir", self)
-        exit_action.triggered.connect(self.close)
+        exit_action.triggered.connect(self._quit_app)
         menu.addAction(exit_action)
 
         return menu
 
     def _refresh_token(self) -> None:
-        """Launch the manual auth flow in a terminal and verify connectivity."""
-
-        app_root = Path(__file__).resolve().parent.parent
-        python_executable = sys.executable
-        auth_command = (
-            f"cd \"{app_root}\"; "
-            f"\"{python_executable}\" -c "
-            "\"import warnings; "
-            "warnings.filterwarnings('ignore', category=FutureWarning, module='google.api_core._python_version_support'); "
-            "from core.auth import load_google_credentials; "
-            "load_google_credentials(force_reauth=True)\"; "
-            f"\"{python_executable}\" -c "
-            "\"import warnings; "
-            "warnings.filterwarnings('ignore', category=FutureWarning, module='google.api_core._python_version_support'); "
-            "import httplib2; import googleapiclient.discovery; "
-            "print(\\\"Conexión lista para sincronizar\\\")\"; "
-            "echo; read -p \\\"Pulsa Enter para cerrar...\\\" _"
-        )
+        """Open the in-app authorization dialog to renew a revoked token."""
 
         if self._menu_button is not None:
             self._status_label.setText("Actualizando token...")
 
-        if shutil.which("xfce4-terminal"):
-            subprocess.Popen(
-                [
-                    "xfce4-terminal",
-                    "--disable-server",
-                    "--command",
-                    f"bash -lc '{auth_command}'",
-                ],
-                start_new_session=True,
-            )
+        try:
+            _, auth_url = init_manual_auth()
+        except MissingCredentialsError as error:
+            self._status_label.setText(f"Falta credentials.json: {error}")
+            return
+        except Exception:
+            logger.exception("No se pudo iniciar el flujo de autorización")
+            self._status_label.setText("No se pudo iniciar la autorización.")
+            return
+
+        dialog = AuthDialog(auth_url, self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self._status_label.setText("Token renovado. Sincronizando...")
+            self.refresh_events()
         else:
-            subprocess.Popen(
-                ["bash", "-lc", auth_command],
-                start_new_session=True,
-            )
+            self._status_label.setText("Autorización cancelada.")
 
     def _show_menu(self) -> None:
         """Display the hamburger menu anchored to the button."""
@@ -802,7 +1047,9 @@ class CalendarWidget(QWidget):
         dialog = ConfigDialog(self)
         if dialog.exec() == QDialog.DialogCode.Accepted:
             self._settings = load_settings()
+            self._theme = get_theme_palette(self._settings)
             self.setFixedWidth(int(self._settings["window_width"]))
+            self.setStyleSheet(self._build_stylesheet())
             self._configure_refresh_timer()
             self.refresh_events()
 
@@ -812,12 +1059,140 @@ class CalendarWidget(QWidget):
         dialog = InfoDialog(self)
         dialog.exec()
 
+    def _open_update_dialog(self) -> None:
+        """Open the update dialog for a manual release check."""
+
+        dialog = UpdateDialog(self)
+        dialog.exec()
+
     def _restart_applet(self) -> None:
         """Restart the Python process cleanly."""
 
         self._persist_position()
         python_executable = sys.executable
         os.execl(python_executable, python_executable, *sys.argv)
+
+    def _quit_app(self) -> None:
+        """Persist state, stop timers, and force a total application exit."""
+
+        self._persist_position()
+        if self._mini_icon is not None:
+            self._mini_icon.close()
+            self._mini_icon = None
+        if self._refresh_timer is not None:
+            self._refresh_timer.stop()
+        if self._notification_timer is not None:
+            self._notification_timer.stop()
+        if self._sync_thread is not None and self._sync_thread.isRunning():
+            self._sync_thread.wait(500)
+        app = QApplication.instance()
+        if app is not None:
+            app.quit()
+
+    def _minimize_to_icon(self) -> None:
+        """Hide the widget and show a small draggable icon."""
+
+        self._minimized_geometry = QRect(self.pos(), self.size())
+        self.hide()
+
+        if self._mini_icon is None:
+            self._mini_icon = MiniIconWidget(self._theme)
+            self._mini_icon.restore_requested.connect(self._restore_from_icon)
+
+        self._mini_icon.move(self._minimized_geometry.topLeft())
+        self._mini_icon.show()
+        self._mini_icon.raise_()
+
+    def _restore_from_icon(self) -> None:
+        """Restore the full widget and hide the minimized icon."""
+
+        if self._mini_icon is not None:
+            self._mini_icon.hide()
+        if self._minimized_geometry is not None:
+            self.setGeometry(self._minimized_geometry)
+        self.show()
+        self.raise_()
+        self.activateWindow()
+        self.refresh_events()
+
+
+class MiniIconWidget(QWidget):
+    """Small draggable icon shown while the calendar widget is minimized."""
+
+    restore_requested = pyqtSignal()
+
+    def __init__(self, theme: dict[str, str], parent: QWidget | None = None) -> None:
+        """Build a compact draggable icon window."""
+
+        super().__init__(parent)
+        self._theme = dict(theme)
+        self._drag_offset: QPoint | None = None
+        self.setObjectName("mini-icon")
+        self.setFixedSize(52, 52)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setToolTip("Zyna Calendar - doble clic para restaurar")
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setWindowFlags(
+            Qt.WindowType.FramelessWindowHint
+            | Qt.WindowType.WindowStaysOnTopHint
+            | Qt.WindowType.Tool
+        )
+        icon_path = get_app_icon_path()
+        self._icon_pixmap = QPixmap(str(icon_path)) if icon_path.exists() else QPixmap()
+
+    def paintEvent(self, event: QPaintEvent | None) -> None:  # noqa: N802
+        """Draw a rounded tile with the app icon."""
+
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        bg_hex = self._theme.get("bg", "#1E232D")
+        accent_hex = self._theme.get("accent", "#3572B6")
+        background = QColor(bg_hex)
+        background.setAlpha(230)
+
+        painter.setPen(QPen(QColor(accent_hex), 2))
+        painter.setBrush(background)
+        painter.drawRoundedRect(self.rect().adjusted(1, 1, -1, -1), 14, 14)
+
+        if not self._icon_pixmap.isNull():
+            icon_size = 32
+            target_rect = QRect(0, 0, icon_size, icon_size)
+            target_rect.moveCenter(self.rect().center())
+            painter.drawPixmap(target_rect, self._icon_pixmap)
+        if event is not None:
+            super().paintEvent(event)
+
+    def mousePressEvent(self, event: QMouseEvent | None) -> None:  # noqa: N802
+        """Capture the drag offset for the icon."""
+
+        if event is not None and event.button() == Qt.MouseButton.LeftButton:
+            self._drag_offset = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event: QMouseEvent | None) -> None:  # noqa: N802
+        """Move the icon while dragging."""
+
+        if (
+            self._drag_offset is not None
+            and event is not None
+            and event.buttons() & Qt.MouseButton.LeftButton
+        ):
+            self.move(event.globalPosition().toPoint() - self._drag_offset)
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event: QMouseEvent | None) -> None:  # noqa: N802
+        """Reset the drag state."""
+
+        self._drag_offset = None
+        super().mouseReleaseEvent(event)
+
+    def mouseDoubleClickEvent(self, event: QMouseEvent | None) -> None:  # noqa: N802
+        """Restore the full widget on double click."""
+
+        if event is not None and event.button() == Qt.MouseButton.LeftButton:
+            self.restore_requested.emit()
+        super().mouseDoubleClickEvent(event)
 
 
 class HamburgerButton(QWidget):
@@ -832,7 +1207,7 @@ class HamburgerButton(QWidget):
         self.setFixedSize(26, 22)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
 
-    def paintEvent(self, event) -> None:  # noqa: N802
+    def paintEvent(self, event: QPaintEvent | None) -> None:  # noqa: N802
         """Draw the hamburger icon."""
 
         painter = QPainter(self)
@@ -844,14 +1219,16 @@ class HamburgerButton(QWidget):
         y_positions = (6, 11, 16)
         for y in y_positions:
             painter.drawLine(4, y, self.width() - 4, y)
-        super().paintEvent(event)
+        if event is not None:
+            super().paintEvent(event)
 
-    def mouseReleaseEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+    def mouseReleaseEvent(self, event: QMouseEvent | None) -> None:  # noqa: N802
         """Emit the click signal on left-button release."""
 
-        if event.button() == Qt.MouseButton.LeftButton:
+        if event is not None and event.button() == Qt.MouseButton.LeftButton:
             self.clicked.emit()
-        super().mouseReleaseEvent(event)
+        if event is not None:
+            super().mouseReleaseEvent(event)
 
 
 class InfoDialog(QDialog):
@@ -885,8 +1262,7 @@ class InfoDialog(QDialog):
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         body = QLabel(
-            "Widget de escritorio ligero para Google Calendar.\n"
-            "Integrado con Zorin OS Lite (XFCE)."
+            "Widget de escritorio ligero para Google Calendar.\nIntegrado con Zorin OS Lite (XFCE)."
         )
         body.setObjectName("info-body")
         body.setAlignment(Qt.AlignmentFlag.AlignCenter)
