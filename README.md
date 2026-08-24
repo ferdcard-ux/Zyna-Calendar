@@ -9,10 +9,10 @@ Widget de escritorio ligero para Zorin OS Lite (XFCE) que muestra los eventos de
 - Minimizar a un icono compacto arrastrable; doble clic restaura el widget.
 - Sincronizacion no bloqueante con hilo dedicado.
 - Cache local para modo sin conexion.
-- Autenticacion manual por consola con persistencia de refresh_token.
+- Autenticacion OAuth por navegador (loopback IP) con persistencia del refresh_token; modo manual copy/paste como respaldo.
 - Opcion "Refresh Token" para reautorizar y validar conexion.
 - Notificaciones nativas de eventos proximos y notificacion persistente para los eventos de hoy.
-- Tarjetas resaltadas por cercania: hoy usa 25% menos opacidad y los proximos 2 dias 15% menos.
+- Tarjetas resaltadas por cercania: hoy suma 25% de visibilidad y los proximos 2 dias 15% (tope 100%).
 - Clic en cualquier punto de una tarjeta abre el evento en el navegador.
 - Pestana "Apariencia": transparencia ajustable (minimo seguro 30%), 7 temas y colores HEX personalizados con contraste Fondo/Tarjetas/Texto (WCAG).
 - Sistema de actualizaciones integrado: comprueba las releases de GitHub (repositorio `owner/repo` configurable), descarga el `.deb` con barra de progreso y verifica su SHA-256 antes de instalar.
@@ -36,7 +36,7 @@ Widget de escritorio ligero para Zorin OS Lite (XFCE) que muestra los eventos de
 python3 main.py
 ```
 
-Si es el primer inicio y no existe `token.json`, se mostrara un enlace en la terminal para autorizar el acceso. Al finalizar veras el mensaje `Autenticacion completada`.
+Si es el primer inicio y no existe `token.json`, la app abrira tu navegador para autorizar el acceso (flujo loopback); al aceptar, veras `AUTENTICACION OK - token guardado`. En equipos sin entorno grafico se usa el modo manual copy/paste con `http://localhost:1`.
 
 ## Instalador para autostart
 
@@ -51,7 +51,7 @@ El instalador tambien instala dependencias adicionales en el entorno de usuario 
 ### Instalacion recomendada del .deb (resuelve dependencias)
 
 ```bash
-sudo apt install ./build_deb/zyna-calendar_0.1.8_all.deb
+sudo apt install ./build_deb/zyna-calendar_0.2.0_all.deb
 ```
 
 ### Instalacion automatizada con dependencias
@@ -66,7 +66,7 @@ sudo apt install ./build_deb/zyna-calendar_0.1.8_all.deb
 ./build_deb/build.sh
 ```
 
-El paquete generado quedara en `build_deb/zyna-calendar_0.1.8_all.deb`.
+El paquete generado quedara en `build_deb/zyna-calendar_0.2.0_all.deb`.
 
 ## Desinstalacion interactiva
 

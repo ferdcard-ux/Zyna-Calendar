@@ -1,5 +1,20 @@
 # Notas de Release
 
+## v0.2.0
+
+- Nueva autenticacion por navegador (loopback IP): la app abre el navegador, captura la autorizacion automaticamente y ya no depende del flujo OOB retirado por Google (que provocaba "Error 400: invalid_request").
+- Fallback manual copy/paste con redirect `http://localhost:1` para equipos sin entorno grafico.
+- Tras renovar el token desde "Refresh Token", la sincronizacion se recupera sin reiniciar la app (invalidacion de credenciales cacheadas).
+- Los fallos transitorios de red durante el refresco ya no fuerzan re-autorizacion: la app arranca en modo cache.
+- Escritura atomica de settings, cache y token; recuperacion automatica ante JSON corrupto (respaldo `.corrupt` + valores por defecto).
+- `token.json` con permisos 0600 (owner-only).
+- Log rotativo (512 KB x 2 copias) en lugar de crecimiento ilimitado.
+- El estado de notificaciones del dia se persiste: reiniciar no re-emite notificaciones ya mostradas.
+- Zona horaria detectada del sistema con America/Bogota como respaldo.
+- Corregido el resaltado por fecha: hoy suma +25% de visibilidad y los proximos 2 dias +15% (tope 100%); antes quedaban mas transparentes que el resto.
+- Boton hamburguesa pintado con el color de texto del tema activo; textos unificados con tildes.
+- Publica tokens permanentes cuando el Consent Screen de Google esta en modo Production.
+
 ## v0.1.8
 
 - Sistema de actualizaciones en la app: consulta la release mas reciente en GitHub (repositorio configurable `owner/repo`).

@@ -38,7 +38,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from core.auth import MissingCredentialsError, init_manual_auth
+from core.auth import MissingCredentialsError, init_manual_auth, run_loopback_auth
 from core.calendar_service import (
     LOCAL_TIMEZONE,
     CalendarClient,
@@ -73,8 +73,8 @@ NOTIFICATION_LEAD_MINUTES = 10
 NOTIFICATION_CHECK_INTERVAL_MS = 60 * 1000
 CACHE_WARNING_FLOOR_MINUTES = 30
 CLICK_DRAG_THRESHOLD = 6
-TODAY_OPACITY_REDUCTION = 25
-SOON_OPACITY_REDUCTION = 15
+TODAY_OPACITY_BOOST = 25
+SOON_OPACITY_BOOST = 15
 SOON_WINDOW_DAYS = 2
 UPDATE_CHECK_INTERVAL_MS = 12 * 60 * 60 * 1000
 STARTUP_UPDATE_DELAY_MS = 15 * 1000
@@ -85,7 +85,7 @@ class EventSyncThread(QThread):
     """Background thread that fetches events without blocking the UI."""
 
     sync_completed = pyqtSignal(object)
-    sync_failed = pyqtSignal(str)
+    sync_failed = pyqtSignal(object)
 
     def __init__(
         self,
@@ -102,12 +102,9 @@ class EventSyncThread(QThread):
 
         try:
             result = self._events_provider()
-        except MissingCredentialsError as error:
-            self.sync_failed.emit(str(error))
-            return
-        except Exception:  # pragma: no cover - defensive thread fallback
-            logger.exception("Unexpected error in background sync thread")
-            self.sync_failed.emit("No se pudo actualizar el calendario.")
+        except Exception as error:
+            logger.exception("Background sync failed")
+            self.sync_failed.emit(error)
             return
 
         self.sync_completed.emit(result)
@@ -147,6 +144,29 @@ class SilentUpdateThread(QThread):
             self.update_available.emit(release)
         else:
             self.up_to_date.emit()
+
+
+class LoopbackAuthThread(QThread):
+    """Background worker that runs the automatic loopback OAuth flow."""
+
+    completed = pyqtSignal()
+    failed = pyqtSignal()
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        """Build the worker without touching the network yet."""
+
+        super().__init__(parent)
+
+    def run(self) -> None:
+        """Run the local-server OAuth flow; fall back signals on any failure."""
+
+        try:
+            run_loopback_auth()
+        except Exception:
+            logger.exception("Loopback OAuth flow failed")
+            self.failed.emit()
+            return
+        self.completed.emit()
 
 
 class EventCard(QWidget):
@@ -313,6 +333,7 @@ class CalendarWidget(QWidget):
         self._current_events: list[CalendarEvent] = []
         self._notified_event_ids: set[str] = set()
         self._notified_today_ids: set[str] = set()
+        self._load_notification_state()
         self._mini_icon: QWidget | None = None
         self._minimized_geometry: QRect | None = None
         self._last_sync_warning_key: str | None = None
@@ -340,7 +361,7 @@ class CalendarWidget(QWidget):
         """Start a background sync if no sync is already running."""
 
         if self._sync_thread is not None and self._sync_thread.isRunning():
-            self._status_label.setText("Sincronizacion en curso...")
+            self._status_label.setText("Sincronización en curso...")
             return
 
         self._set_sync_enabled(False)
@@ -425,7 +446,7 @@ class CalendarWidget(QWidget):
         title_label = QLabel("Zyna Calendar")
         title_label.setObjectName("title-label")
 
-        self._menu_button = HamburgerButton()
+        self._menu_button = HamburgerButton(self._theme)
         self._menu_button.setObjectName("menu-button")
         self._menu_button.clicked.connect(self._show_menu)
         self._menu = self._build_menu()
@@ -632,8 +653,8 @@ class CalendarWidget(QWidget):
         """Show a desktop notification when a newer release exists."""
 
         self._notify_send(
-            "Actualizacion disponible",
-            f"Zyna-Calendar {release.version} esta listo para instalar.",
+            "Actualización disponible",
+            f"Zyna-Calendar {release.version} está listo para instalar.",
         )
 
     def _on_update_check_failed(self, message: str) -> None:
@@ -679,8 +700,13 @@ class CalendarWidget(QWidget):
         self._check_upcoming_event_notification()
         self._notify_today_events()
 
-    def _render_error(self, message: str) -> None:
-        """Show a lightweight error state when sync fails."""
+    def _render_error(self, error: Exception) -> None:
+        """Show a cache-aware error state when sync fails."""
+
+        result = self._calendar_client.fallback_result(error)
+        if result.events or result.is_from_cache:
+            self._render_sync_result(result)
+            return
 
         self._clear_events()
         self._current_events = []
@@ -689,8 +715,8 @@ class CalendarWidget(QWidget):
             "La sincronización con Google falló. Revisa credenciales o red."
         )
         self._sync_health_label.show()
-        self._status_label.setText(message)
-        self._add_placeholder_label("Revisa tus credenciales o la red.")
+        self._status_label.setText(result.status_message)
+        self._add_placeholder_label(result.sync_warning or "Revisa tus credenciales o la red.")
         self._auto_resize()
         self._ensure_on_screen()
 
@@ -722,14 +748,19 @@ class CalendarWidget(QWidget):
         self._events_layout.addWidget(placeholder)
 
     def _card_opacity_for(self, event: CalendarEvent) -> int:
-        """Return the card opacity emphasizing today and soon events."""
+        """Return the card opacity emphasizing today and soon events.
+
+        The opacity value is the card background alpha, so a HIGHER value makes
+        the card more visible against the desktop. Today gets +25% and events
+        within two days +15%, capped at MAX_OPACITY.
+        """
 
         base_opacity = int(self._settings.get("opacity", DEFAULT_OPACITY))
         days_until = (event.start_at.date() - datetime.now(LOCAL_TIMEZONE).date()).days
         if days_until <= 0:
-            return max(MIN_OPACITY, base_opacity - TODAY_OPACITY_REDUCTION)
+            return min(MAX_OPACITY, base_opacity + TODAY_OPACITY_BOOST)
         if days_until <= SOON_WINDOW_DAYS:
-            return max(MIN_OPACITY, base_opacity - SOON_OPACITY_REDUCTION)
+            return min(MAX_OPACITY, base_opacity + SOON_OPACITY_BOOST)
         return base_opacity
 
     def _auto_resize(self) -> None:
@@ -775,6 +806,8 @@ class CalendarWidget(QWidget):
         for event in today_events:
             self._send_today_event_notification(event)
             self._notified_today_ids.add(event.event_id)
+        if today_events:
+            self._persist_notification_state()
 
     def _set_sync_enabled(self, is_enabled: bool) -> None:
         """Toggle the manual sync label state."""
@@ -851,6 +884,7 @@ class CalendarWidget(QWidget):
         ):
             self._send_desktop_notification(next_event)
             self._notified_event_ids.add(next_event.event_id)
+            self._persist_notification_state()
 
     def _send_desktop_notification(
         self,
@@ -895,12 +929,32 @@ class CalendarWidget(QWidget):
         except Exception:
             logger.exception("Failed to send desktop notification")
 
+    def _load_notification_state(self) -> None:
+        """Restore persisted notification state, resetting it on a new day."""
+
+        from utils.config import load_notification_state
+
+        state = load_notification_state()
+        today = datetime.now(LOCAL_TIMEZONE).date().isoformat()
+        if state.get("date") != today:
+            return
+        self._notified_today_ids = set(state.get("notified_today", []))
+        self._notified_event_ids = set(state.get("notified_upcoming", []))
+
+    def _persist_notification_state(self) -> None:
+        """Save which notifications already fired so restarts do not repeat them."""
+
+        from utils.config import save_notification_state
+
+        save_notification_state(self._notified_today_ids, self._notified_event_ids)
+
     def _prune_notified_events(self) -> None:
         """Keep notification state only for events still present in memory."""
 
         active_event_ids = {event.event_id for event in self._current_events}
         self._notified_event_ids.intersection_update(active_event_ids)
         self._notified_today_ids.intersection_update(active_event_ids)
+        self._persist_notification_state()
 
     def _update_sync_health(self, result: CalendarSyncResult) -> None:
         """Show a visible warning when the widget is serving stale cached data."""
@@ -941,12 +995,12 @@ class CalendarWidget(QWidget):
             return ""
 
         if elapsed_minutes < 60:
-            return f"Ultima sincronización real con Google hace {elapsed_minutes} minutos."
+            return f"Última sincronización real con Google hace {elapsed_minutes} minutos."
 
         hours, minutes = divmod(elapsed_minutes, 60)
         if minutes == 0:
-            return f"Ultima sincronización real con Google hace {hours} horas."
-        return f"Ultima sincronización real con Google hace {hours} h {minutes} min."
+            return f"Última sincronización real con Google hace {hours} horas."
+        return f"Última sincronización real con Google hace {hours} h {minutes} min."
 
     def _send_sync_health_notification(self, title: str, message: str) -> None:
         """Send a desktop notification for persistent sync-health warnings."""
@@ -984,7 +1038,7 @@ class CalendarWidget(QWidget):
         refresh_token_action.triggered.connect(self._refresh_token)
         menu.addAction(refresh_token_action)
 
-        config_action = QAction("Configuracion", self)
+        config_action = QAction("Configuración", self)
         config_action.triggered.connect(self._open_config_dialog)
         menu.addAction(config_action)
 
@@ -1011,27 +1065,42 @@ class CalendarWidget(QWidget):
         return menu
 
     def _refresh_token(self) -> None:
-        """Open the in-app authorization dialog to renew a revoked token."""
+        """Renew a revoked token using loopback auth with manual fallback."""
 
-        if self._menu_button is not None:
-            self._status_label.setText("Actualizando token...")
+        self._status_label.setText("Actualizando token...")
+
+        try:
+            run_loopback_auth()
+        except MissingCredentialsError as error:
+            self._status_label.setText(f"Falta credentials.json: {error}")
+            return
+        except Exception:
+            logger.exception("Flujo loopback no disponible; se usará el modo manual")
+            if not self._refresh_token_manual():
+                return
+
+        self._status_label.setText("Token renovado. Sincronizando...")
+        self._calendar_client.invalidate()
+        self.refresh_events()
+
+    def _refresh_token_manual(self) -> bool:
+        """Run the copy/paste dialog flow. Returns True when authorized."""
 
         try:
             _, auth_url = init_manual_auth()
         except MissingCredentialsError as error:
             self._status_label.setText(f"Falta credentials.json: {error}")
-            return
+            return False
         except Exception:
             logger.exception("No se pudo iniciar el flujo de autorización")
             self._status_label.setText("No se pudo iniciar la autorización.")
-            return
+            return False
 
         dialog = AuthDialog(auth_url, self)
         if dialog.exec() == QDialog.DialogCode.Accepted:
-            self._status_label.setText("Token renovado. Sincronizando...")
-            self.refresh_events()
-        else:
-            self._status_label.setText("Autorización cancelada.")
+            return True
+        self._status_label.setText("Autorización cancelada.")
+        return False
 
     def _show_menu(self) -> None:
         """Display the hamburger menu anchored to the button."""
@@ -1200,10 +1269,15 @@ class HamburgerButton(QWidget):
 
     clicked = pyqtSignal()
 
-    def __init__(self, parent: QWidget | None = None) -> None:
-        """Initialize the button surface."""
+    def __init__(
+        self,
+        theme: dict[str, str] | None = None,
+        parent: QWidget | None = None,
+    ) -> None:
+        """Initialize the button surface with the active theme colors."""
 
         super().__init__(parent)
+        self._line_color = dict(theme or {}).get("text", "#FFFFFF")
         self.setFixedSize(26, 22)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
 
@@ -1212,7 +1286,7 @@ class HamburgerButton(QWidget):
 
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        pen = QPen(QColor("#ffffff"))
+        pen = QPen(QColor(self._line_color))
         pen.setWidth(2)
         painter.setPen(pen)
 

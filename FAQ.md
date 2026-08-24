@@ -10,7 +10,8 @@
 
 - Revisa la ruta de credenciales en Configuracion.
 - Asegura que la API de Google Calendar este habilitada.
-- En el primer inicio la autorizacion se realiza por consola; asegurate de aceptar el enlace y pegar el codigo.
+- La autorizacion usa tu navegador (flujo loopback local). Si no hay entorno grafico, la app mostrara una URL y pedira pegar el codigo manualmente.
+- Si aparece "Error 400: invalid_request", verifica que las credenciales correspondan a un cliente OAuth vigente.
 
 ## Quiero refrescar el token manualmente
 
@@ -29,7 +30,7 @@
 
 ## El .deb no instala dependencias automaticamente
 
-- Usa `sudo apt install ./build_deb/zyna-calendar_0.1.8_all.deb` para resolver dependencias.
+- Usa `sudo apt install ./build_deb/zyna-calendar_0.2.0_all.deb` para resolver dependencias.
 - Alternativamente ejecuta `./build_deb/install.sh`.
 
 ## Como desinstalo el widget

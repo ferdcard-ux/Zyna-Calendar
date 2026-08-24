@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import socket
 from datetime import date, datetime, time, timedelta
 
+from google.auth.exceptions import RefreshError
 from googleapiclient.errors import HttpError
 from httplib2 import ServerNotFoundError
 
@@ -146,3 +148,41 @@ class _FakeResponse:
     def __init__(self, status: int) -> None:
         self.status = status
         self.reason = "fake"
+
+
+def test_invalidate_clears_cached_service_and_credentials() -> None:
+    client = CalendarClient(credentials=object())  # type: ignore[arg-type]
+    client._service = object()  # type: ignore[assignment]
+
+    client.invalidate()
+
+    assert client._service is None
+    assert client._credentials is None
+
+
+def test_fallback_result_uses_cache(monkeypatch, tmp_path) -> None:
+    from utils import config as config_module
+
+    payload = {
+        "saved_at": "2026-08-20T12:00:00+00:00",
+        "events": [
+            {
+                "event_id": "evt-1",
+                "title": "Cacheado",
+                "start_at": "2026-08-21T10:00:00-05:00",
+                "is_all_day": False,
+                "html_link": "",
+            }
+        ],
+    }
+    cache_path = tmp_path / "events_cache.json"
+    cache_path.write_text(json.dumps(payload), encoding="utf-8")
+    monkeypatch.setattr(config_module, "get_event_cache_path", lambda: cache_path)
+
+    client = _make_client()
+    result = client.fallback_result(RefreshError("invalid_grant"))
+
+    assert result.is_from_cache is True
+    assert result.requires_attention is True
+    assert len(result.events) == 1
+    assert result.events[0].title == "Cacheado"

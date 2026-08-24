@@ -47,7 +47,7 @@ class ConfigDialog(QDialog):
         """Initialize the dialog with current settings."""
 
         super().__init__(parent)
-        self.setWindowTitle("Configuracion")
+        self.setWindowTitle("Configuración")
         self.setModal(True)
         self.setMinimumWidth(420)
 
@@ -93,16 +93,16 @@ class ConfigDialog(QDialog):
         form_layout.setHorizontalSpacing(12)
         form_layout.setVerticalSpacing(10)
 
-        events_label = QLabel("Numero de eventos")
+        events_label = QLabel("Número de eventos")
         self._events_spin = QSpinBox()
         self._events_spin.setRange(1, 8)
         self._events_spin.setValue(int(self._settings.get("max_events", 5)))
 
-        refresh_label = QLabel("Intervalo de sincronizacion (min):")
+        refresh_label = QLabel("Intervalo de sincronización (min):")
         self._refresh_spin = QSpinBox()
         self._refresh_spin.setRange(0, 1440)
         self._refresh_spin.setValue(int(self._settings.get("refresh_interval", 15)))
-        refresh_note = QLabel("0 = Sincronizacion automatica desactivada")
+        refresh_note = QLabel("0 = Sincronización automática desactivada")
         refresh_note.setObjectName("refresh-note")
 
         autostart_label = QLabel("Autostart")
@@ -147,7 +147,7 @@ class ConfigDialog(QDialog):
 
         self._auto_check_checkbox = QCheckBox("Buscar actualizaciones automaticamente")
         self._auto_check_checkbox.setChecked(bool(self._settings.get("update_auto_check", True)))
-        auto_hint = QLabel("Comprueba cada 12 horas y al iniciar la aplicacion.")
+        auto_hint = QLabel("Comprueba cada 12 horas y al iniciar la aplicación.")
         auto_hint.setObjectName("refresh-note")
         layout.addWidget(self._auto_check_checkbox)
         layout.addWidget(auto_hint)

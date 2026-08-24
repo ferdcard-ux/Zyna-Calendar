@@ -6,6 +6,7 @@ import logging
 import socket
 from dataclasses import dataclass
 from datetime import date, datetime, time, timezone
+from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -18,7 +19,21 @@ from httplib2 import ServerNotFoundError
 from core.auth import SCOPES, MissingCredentialsError, load_google_credentials
 from utils.config import load_event_cache, load_event_cache_snapshot, save_event_cache
 
-LOCAL_TIMEZONE = ZoneInfo("America/Bogota")
+_FALLBACK_TIMEZONE = "America/Bogota"
+
+
+def _resolve_local_timezone() -> ZoneInfo:
+    """Resolve the system timezone with America/Bogota as fallback."""
+
+    try:
+        localtime = Path("/etc/localtime").resolve()
+        zone_name = localtime.relative_to("/usr/share/zoneinfo").as_posix()
+        return ZoneInfo(zone_name)
+    except (OSError, ValueError):
+        return ZoneInfo(_FALLBACK_TIMEZONE)
+
+
+LOCAL_TIMEZONE = _resolve_local_timezone()
 MAX_EVENTS_LIMIT = 8
 logger = logging.getLogger("zyna-calendar")
 
@@ -54,6 +69,16 @@ class CalendarClient:
 
         self._service: Resource | None = None
         self._credentials = credentials
+
+    def invalidate(self) -> None:
+        """Drop the cached service and credentials so the next sync reloads them.
+
+        Called after a successful re-authorization so the client picks up the
+        fresh token from disk without restarting the application.
+        """
+
+        self._service = None
+        self._credentials = None
 
     @staticmethod
     def _clamp_max_results(max_results: int) -> int:
@@ -95,7 +120,9 @@ class CalendarClient:
             raise
         except Exception as error:
             logger.exception("Calendar sync failed")
-            return self._build_fallback_result(error)
+            if self._is_auth_error(error):
+                self.invalidate()
+            return self.fallback_result(error)
 
         events = response.get("items", [])
         parsed_events = [self._deserialize_event(item) for item in events]
@@ -206,6 +233,11 @@ class CalendarClient:
                 cached_events.append(cached_event)
 
         return cached_events
+
+    def fallback_result(self, error: Exception) -> CalendarSyncResult:
+        """Public wrapper used by the UI to render a cache-aware error state."""
+
+        return self._build_fallback_result(error)
 
     def _build_fallback_result(self, error: Exception) -> CalendarSyncResult:
         """Build a non-fatal UI result when sync cannot reach Google."""

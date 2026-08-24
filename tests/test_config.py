@@ -207,3 +207,32 @@ def test_rgba_string_builds_css() -> None:
 
 def test_hex_to_rgb_parses() -> None:
     assert config_module.hex_to_rgb("#3572B6") == (53, 114, 182)
+
+
+def test_load_settings_recovers_from_corrupt_file(isolated_config, tmp_path: Path) -> None:
+    config_module.SETTINGS_PATH.write_text("{not valid json", encoding="utf-8")
+
+    settings = config_module.load_settings()
+
+    assert settings["refresh_interval"] == 15
+    assert config_module.SETTINGS_PATH.exists()
+    assert Path(str(config_module.SETTINGS_PATH) + ".corrupt").exists()
+
+
+def test_save_event_cache_is_atomic(isolated_config) -> None:
+    config_module.save_event_cache([{"event_id": "1"}])
+
+    snapshot = config_module.load_event_cache_snapshot()
+    assert snapshot["events"] == [{"event_id": "1"}]
+    assert snapshot["saved_at"]
+
+
+def test_notification_state_roundtrip(isolated_config) -> None:
+    config_module.save_notification_state({"evt-a", "evt-b"}, {"evt-c"})
+
+    state = config_module.load_notification_state()
+    assert state["notified_today"] == ["evt-a", "evt-b"]
+    assert state["notified_upcoming"] == ["evt-c"]
+
+    empty = {"date": "", "notified_today": [], "notified_upcoming": []}
+    assert set(empty) == set(state)

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -14,6 +16,10 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 from utils.config import get_credentials_path, get_token_path
 
 SCOPES = ("https://www.googleapis.com/auth/calendar.readonly",)
+
+#: Redirect URI for the manual copy/paste flow. The legacy OOB URI was removed
+#: by Google in 2023; a loopback URL is the supported replacement.
+MANUAL_REDIRECT_URI = "http://localhost:1"
 
 #: Exit codes used by the Bash launcher to decide whether to open the reauth terminal.
 TOKEN_STATE_OK = "ok"
@@ -53,26 +59,40 @@ def load_google_credentials(
             _persist_credentials(token_path, credentials)
             return credentials
         except RefreshError:
-            print("No se pudo refrescar el token. Se solicitara una nueva autorizacion.")
+            print("No se pudo refrescar el token. Se solicitará una nueva autorización.")
             credentials = None
-        except Exception:
-            print("No se pudo refrescar el token por un error inesperado.")
-            credentials = None
+        except Exception as error:
+            # Fallo transitorio (red/DNS/timeout): no force re-auth; la sync caerá a caché.
+            print(f"No se pudo refrescar el token por un error transitorio: {error}")
+            return credentials
 
-    # 2. Si no hay credenciales validas, iniciar flujo manual OOB.
+    # 2. Si no hay credenciales validas, autorizar vía navegador (loopback)
+    #    y caer al modo manual copy/paste solo si no hay entorno gráfico.
     if not credentials or not credentials.valid:
+        if _has_display():
+            try:
+                return run_loopback_auth(requested_scopes)
+            except Exception as error:
+                print(f"Flujo de navegador no disponible ({error}). Usando modo manual.")
         credentials = complete_manual_auth(scopes=requested_scopes)
 
     return credentials
 
 
+def _has_display() -> bool:
+    """Return True when a graphical session is available for the browser flow."""
+
+    return bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
+
+
 def init_manual_auth(
     scopes: Sequence[str] | None = None,
 ) -> tuple[InstalledAppFlow, str]:
-    """Build the OOB flow and return the authorization URL without blocking.
+    """Build the manual copy/paste flow and return the authorization URL.
 
-    Returns the fully configured flow plus the URL the user must open. The caller
-    is responsible for finishing the exchange with :func:`complete_manual_auth`.
+    Uses a loopback redirect URI instead of the deprecated OOB flow. Returns the
+    fully configured flow plus the URL the user must open. The caller is
+    responsible for finishing the exchange with :func:`complete_manual_auth`.
     """
 
     requested_scopes = list(scopes or SCOPES)
@@ -85,7 +105,7 @@ def init_manual_auth(
         str(credentials_path),
         requested_scopes,
     )
-    flow.redirect_uri = "urn:ietf:wg:oauth:2.0:oob"
+    flow.redirect_uri = MANUAL_REDIRECT_URI
 
     auth_url, _ = flow.authorization_url(
         prompt="consent",
@@ -94,11 +114,40 @@ def init_manual_auth(
     return flow, auth_url
 
 
+def run_loopback_auth(
+    scopes: Sequence[str] | None = None,
+    open_browser: bool = True,
+) -> Credentials:
+    """Run the automatic loopback OAuth flow and persist the new token.
+
+    Starts an ephemeral local HTTP server, opens the browser, captures the
+    authorization response and exchanges the code. Raises ``OSError``-like
+    errors from the underlying server when no graphical/browser environment is
+    available; callers should fall back to :func:`complete_manual_auth`.
+    """
+
+    requested_scopes = list(scopes or SCOPES)
+    credentials_path = get_credentials_path()
+
+    if not credentials_path.exists():
+        raise MissingCredentialsError(f"Falta credentials.json en {credentials_path}")
+
+    flow = InstalledAppFlow.from_client_secrets_file(
+        str(credentials_path),
+        requested_scopes,
+    )
+    flow_credentials = flow.run_local_server(port=0, open_browser=open_browser)
+    if not isinstance(flow_credentials, Credentials):
+        raise TypeError("El flujo de OAuth no devolvió credenciales válidas.")
+    _persist_credentials(get_token_path(), flow_credentials)
+    return flow_credentials
+
+
 def complete_manual_auth(
     code: str | None = None,
     scopes: Sequence[str] | None = None,
 ) -> Credentials:
-    """Run the OOB manual flow, optionally finishing with a pasted code.
+    """Run the manual copy/paste flow, optionally finishing with a pasted code.
 
     If ``code`` is provided the token exchange is completed immediately, otherwise
     the authorization URL is printed and the code is read from standard input.
@@ -116,7 +165,7 @@ def complete_manual_auth(
     try:
         flow.fetch_token(code=code)
     except Exception as error:
-        print("Autenticacion fallida. El codigo es invalido o expirado.")
+        print("Autenticación fallida. El código es inválido o expirado.")
         raise error
 
     if isinstance(flow.credentials, Credentials):
@@ -196,26 +245,45 @@ def _load_cached_credentials(
 
 
 def _persist_credentials(token_path: Path, credentials: Credentials) -> None:
-    """Persist OAuth credentials in the local configuration directory."""
+    """Persist OAuth credentials in the local configuration directory.
+
+    The token contains the client secret and refresh token, so it is written
+    with owner-only permissions (0600) using an atomic replace.
+    """
 
     token_path.parent.mkdir(parents=True, exist_ok=True)
+
     if hasattr(credentials, "to_json"):
-        token_path.write_text(credentials.to_json(), encoding="utf-8")
-        return
-
-    if hasattr(credentials, "to_authorized_user_info"):
-        payload = credentials.to_authorized_user_info()
+        payload = credentials.to_json()
+    elif hasattr(credentials, "to_authorized_user_info"):
+        payload = json.dumps(
+            credentials.to_authorized_user_info(),
+            ensure_ascii=False,
+            indent=2,
+        )
     else:
-        payload = {
-            "token": getattr(credentials, "token", None),
-            "refresh_token": getattr(credentials, "refresh_token", None),
-            "token_uri": getattr(credentials, "token_uri", None),
-            "client_id": getattr(credentials, "client_id", None),
-            "client_secret": getattr(credentials, "client_secret", None),
-            "scopes": list(getattr(credentials, "scopes", []) or []),
-        }
+        payload = json.dumps(
+            {
+                "token": getattr(credentials, "token", None),
+                "refresh_token": getattr(credentials, "refresh_token", None),
+                "token_uri": getattr(credentials, "token_uri", None),
+                "client_id": getattr(credentials, "client_id", None),
+                "client_secret": getattr(credentials, "client_secret", None),
+                "scopes": list(getattr(credentials, "scopes", []) or []),
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
 
-    token_path.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2),
-        encoding="utf-8",
+    file_descriptor, temp_name = tempfile.mkstemp(
+        dir=token_path.parent,
+        prefix=f".{token_path.name}.",
     )
+    try:
+        with os.fdopen(file_descriptor, "w", encoding="utf-8") as file_pointer:
+            file_pointer.write(payload)
+        os.chmod(temp_name, 0o600)
+        os.replace(temp_name, token_path)
+    except BaseException:
+        Path(temp_name).unlink(missing_ok=True)
+        raise

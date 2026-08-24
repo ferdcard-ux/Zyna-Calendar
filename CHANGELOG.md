@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.2.0
+
+- Migrado el flujo OAuth manual desde el OOB deprecado (retirado por Google en 2023) a loopback IP: la opcion "Refresh Token" abre el navegador y captura el codigo automaticamente; si no hay entorno grafico, cae al modo copy/paste con `http://localhost:1`.
+- El cliente de calendario invalida sus credenciales cacheadas tras una re-autorizacion exitosa, por lo que la sincronizacion se recupera sin reiniciar la app.
+- Los fallos transitorios de red durante el refresco del token ya no fuerzan re-autorizacion: la app arranca en modo cache.
+- Escritura atomica de `settings.json`, `events_cache.json` y `token.json` (temporal + `os.replace`) y recuperacion automatica ante JSON corrupto (respaldo `.corrupt` + valores por defecto).
+- `token.json` se guarda con permisos 0600 (owner-only).
+- Log rotativo (`RotatingFileHandler`, 512 KB x 2) en lugar de crecimiento ilimitado.
+- El estado de notificaciones del dia se persiste en `notified_state.json`: reiniciar la app no vuelve a emitir notificaciones ya mostradas.
+- Zona horaria detectada del sistema (`/etc/localtime`) con America/Bogota como respaldo, eliminando el hardcodeo.
+- Boton hamburguesa pintado con el color de texto del tema activo.
+- Ruta de error del widget con fallback a caché local tambien via señal `sync_failed`.
+- Corregido el resaltado por fecha: la opacidad es el alfa del fondo de la tarjeta, por lo que ahora los eventos de hoy suman +25% y los de los proximos 2 dias +15% (tope 100%), haciendo las tarjetas destacadas MAS visibles que el resto (antes quedaban mas transparentes).
+- Textos unificados con tildes.
+
 ## 0.1.8
 
 - Nuevo sistema de actualizaciones integrado: se consulta la release mas reciente en GitHub y se descarga el paquete `.deb` con barra de progreso.

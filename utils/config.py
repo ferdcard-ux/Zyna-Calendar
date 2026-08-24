@@ -2,22 +2,27 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
+import logging.handlers
+import os
 import re
+import tempfile
 from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 APP_SLUG = "zyna-calendar"
-APP_VERSION = "0.1.8"
+APP_VERSION = "0.2.0"
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 CONFIG_DIR = Path.home() / ".config" / APP_SLUG
 SETTINGS_PATH = CONFIG_DIR / "settings.json"
 TOKEN_PATH = CONFIG_DIR / "token.json"
 CREDENTIALS_PATH = PROJECT_ROOT / "credentials.json"
 EVENT_CACHE_PATH = CONFIG_DIR / "events_cache.json"
+NOTIFIED_STATE_PATH = CONFIG_DIR / "notified_state.json"
 LOG_PATH = CONFIG_DIR / "app.log"
 AUTOSTART_PATH = Path.home() / ".config" / "autostart" / "zyna-calendar.desktop"
 APP_ICON_PATH = PROJECT_ROOT / "icon-128x128.png"
@@ -146,8 +151,29 @@ def get_app_icon_path() -> Path:
     return APP_ICON_PATH
 
 
+def _atomic_write_text(path: Path, text: str) -> None:
+    """Write ``text`` to ``path`` atomically via a temp file and os.replace."""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    file_descriptor, temp_name = tempfile.mkstemp(
+        dir=path.parent,
+        prefix=f".{path.name}.",
+    )
+    try:
+        with os.fdopen(file_descriptor, "w", encoding="utf-8") as file_pointer:
+            file_pointer.write(text)
+        os.replace(temp_name, path)
+    except BaseException:
+        Path(temp_name).unlink(missing_ok=True)
+        raise
+
+
 def load_settings() -> dict[str, Any]:
-    """Load widget settings and create the default file on first run."""
+    """Load widget settings and create the default file on first run.
+
+    A corrupt settings file is backed up aside and defaults are returned so a
+    broken JSON payload can never crash the application at startup.
+    """
 
     settings_path = get_settings_path()
 
@@ -155,8 +181,18 @@ def load_settings() -> dict[str, Any]:
         save_settings(DEFAULT_SETTINGS)
         return deepcopy(DEFAULT_SETTINGS)
 
-    with settings_path.open("r", encoding="utf-8") as file_pointer:
-        loaded_settings = json.load(file_pointer)
+    try:
+        with settings_path.open("r", encoding="utf-8") as file_pointer:
+            loaded_settings = json.load(file_pointer)
+    except (json.JSONDecodeError, OSError):
+        backup_path = settings_path.with_suffix(".json.corrupt")
+        with contextlib.suppress(OSError):
+            os.replace(settings_path, backup_path)
+        save_settings(DEFAULT_SETTINGS)
+        return deepcopy(DEFAULT_SETTINGS)
+
+    if not isinstance(loaded_settings, dict):
+        loaded_settings = {}
 
     migrated_settings = _migrate_settings(loaded_settings)
     merged_settings = deepcopy(DEFAULT_SETTINGS)
@@ -285,8 +321,10 @@ def save_settings(settings: dict[str, Any]) -> None:
     """Persist widget settings in the local configuration directory."""
 
     settings_path = get_settings_path()
-    with settings_path.open("w", encoding="utf-8") as file_pointer:
-        json.dump(settings, file_pointer, indent=4)
+    _atomic_write_text(
+        settings_path,
+        json.dumps(settings, indent=4),
+    )
 
 
 def save_window_position(window_x: int, window_y: int) -> dict[str, Any]:
@@ -344,8 +382,61 @@ def save_event_cache(events: list[dict[str, Any]]) -> None:
         "saved_at": datetime.now(timezone.utc).isoformat(),
         "events": events,
     }
-    with cache_path.open("w", encoding="utf-8") as file_pointer:
-        json.dump(payload, file_pointer, indent=4)
+    _atomic_write_text(
+        cache_path,
+        json.dumps(payload, indent=4),
+    )
+
+
+def _notified_state_path() -> Path:
+    """Return the notification state path inside the current config directory."""
+
+    return CONFIG_DIR / "notified_state.json"
+
+
+def load_notification_state() -> dict[str, Any]:
+    """Load the persisted notification state for today's events."""
+
+    state_path = _notified_state_path()
+    if not state_path.exists():
+        return {"date": "", "notified_today": [], "notified_upcoming": []}
+
+    try:
+        with state_path.open("r", encoding="utf-8") as file_pointer:
+            payload = json.load(file_pointer)
+    except (json.JSONDecodeError, OSError):
+        return {"date": "", "notified_today": [], "notified_upcoming": []}
+
+    if not isinstance(payload, dict):
+        return {"date": "", "notified_today": [], "notified_upcoming": []}
+    return {
+        "date": str(payload.get("date", "")),
+        "notified_today": [
+            str(item) for item in payload.get("notified_today", []) if isinstance(item, str)
+        ],
+        "notified_upcoming": [
+            str(item) for item in payload.get("notified_upcoming", []) if isinstance(item, str)
+        ],
+    }
+
+
+def save_notification_state(
+    notified_today: set[str],
+    notified_upcoming: set[str],
+) -> None:
+    """Persist which event IDs already fired a notification today."""
+
+    _atomic_write_text(
+        _notified_state_path(),
+        json.dumps(
+            {
+                "date": datetime.now().astimezone().date().isoformat(),
+                "notified_today": sorted(notified_today),
+                "notified_upcoming": sorted(notified_upcoming),
+            },
+            indent=2,
+        ),
+    )
 
 
 def get_theme_palette(settings: dict[str, Any]) -> dict[str, str]:
@@ -438,7 +529,7 @@ def get_log_path() -> Path:
 
 
 def configure_logging() -> logging.Logger:
-    """Configure a quiet file logger for the application."""
+    """Configure a quiet rotating file logger for the application."""
 
     log_path = get_log_path()
     logger = logging.getLogger(APP_SLUG)
@@ -453,7 +544,12 @@ def configure_logging() -> logging.Logger:
 
     logger.handlers.clear()
 
-    file_handler = logging.FileHandler(log_path, encoding="utf-8")
+    file_handler = logging.handlers.RotatingFileHandler(
+        log_path,
+        maxBytes=512 * 1024,
+        backupCount=2,
+        encoding="utf-8",
+    )
     file_handler.setLevel(logging.INFO)
     file_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
     logger.addHandler(file_handler)

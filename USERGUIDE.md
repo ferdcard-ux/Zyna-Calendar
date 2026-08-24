@@ -5,12 +5,13 @@
 1. Crea un proyecto en Google Cloud Console y habilita Google Calendar API.
 2. Genera un cliente OAuth de tipo Desktop app.
 3. Descarga `credentials.json` y configura su ruta desde el menu (Configuracion).
-4. En el primer inicio se abrira un enlace en la terminal para autorizar. Al finalizar veras el mensaje `Autenticacion completada`.
+4. En el primer inicio la app abrira tu navegador para autorizar el acceso (loopback). Si Google muestra el aviso "app no verificada", usa Continuar > Avanzado > Ir a Zyna Calendar.
+5. Al aceptar, la app guarda el token y arranca sola. En equipos sin navegador se muestra una URL y un campo para pegar el codigo manualmente.
 
 ## Menu principal
 
 - Sync Manual: actualiza los eventos inmediatamente.
-- Refresh Token: reautoriza el acceso y valida la conexion con Google.
+- Refresh Token: reautoriza el acceso abriendo tu navegador (sin reiniciar la app) y valida la conexion con Google.
 - Configuracion: ajusta eventos, intervalos, credenciales, apariencia y actualizaciones.
 - Buscar actualizaciones: consulta la release mas reciente en GitHub y permite descargar e instalar el nuevo `.deb`.
 - Info: informacion basica del widget.
@@ -60,14 +61,14 @@ El archivo `~/.config/zyna-calendar/token.json` guarda el `refresh_token`. Mient
 ## Tarjetas de eventos
 
 - Clic en cualquier punto de una tarjeta abre el evento en el navegador.
-- La cercania se refleja en la opacidad: las tarjetas de hoy usan 25% menos de opacidad que el fondo base y las de los proximos 2 dias 15% menos.
+- La cercania se refleja en la visibilidad: las tarjetas de eventos de hoy suman 25% de opacidad sobre la base y las de los proximos 2 dias suman 15% (tope 100%), destacandose sobre el resto.
 
 ## Instalacion con .deb
 
 Opcion recomendada (resuelve dependencias automaticamente):
 
 ```bash
-sudo apt install ./build_deb/zyna-calendar_0.1.8_all.deb
+sudo apt install ./build_deb/zyna-calendar_0.2.0_all.deb
 ```
 
 Instalacion automatizada:
