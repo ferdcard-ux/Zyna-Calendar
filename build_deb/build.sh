@@ -29,7 +29,7 @@ if [[ -f "$APP_DIR/credentials.json" ]]; then
     rm -f "$APP_DIR/credentials.json"
 fi
 
-for doc in README.md CHANGELOG.md USERGUIDE.md FAQ.md; do
+for doc in README.md docs/CHANGELOG.md docs/USERGUIDE.md docs/FAQ.md; do
     if [[ -f "$PROJECT_ROOT/$doc" ]]; then
         cp "$PROJECT_ROOT/$doc" "$APP_DIR/"
     fi

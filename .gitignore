@@ -39,6 +39,10 @@ credentials.json
 # Documentos de desarrollo personal (no se publican)
 BITACORA.md
 PLAN_DE_MEJORAS.md
+PLAN_TECNICO_MEJORAS_V2.md
 Fix.txt
 Not-Fix.txt
 .github/instructions/
+
+# Copia local de credenciales de desarrollo
+client_secret*.json
